@@ -9,7 +9,7 @@ APP_DIR="$(xcodebuild \
     -scheme eqYourMacbook \
     -configuration Debug \
     -showBuildSettings 2>/dev/null \
-    | awk '/BUILT_PRODUCTS_DIR/{print $3}')"
+    | awk '$1 == "BUILT_PRODUCTS_DIR" {print $3}')"
 
 if [ -z "$APP_DIR" ]; then
     echo "error: could not find build output — run scripts/build.sh first"
