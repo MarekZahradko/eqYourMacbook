@@ -169,12 +169,10 @@ final class EngineCoefficientTests: XCTestCase {
         var vdspOut = [Float](repeating: 0, count: count)
         impulse.withUnsafeBufferPointer { inBuf in
             vdspOut.withUnsafeMutableBufferPointer { outBuf in
-                // Arrays of non-optional channel pointers — withUnsafeBufferPointer
-                // yields exactly the const float** / float** vDSP_biquadm wants.
-                let inChannels: [UnsafePointer<Float>] = [inBuf.baseAddress!]
-                let outChannels: [UnsafeMutablePointer<Float>] = [outBuf.baseAddress!]
-                inChannels.withUnsafeBufferPointer { ip in
-                    outChannels.withUnsafeBufferPointer { op in
+                var inChannels: [UnsafePointer<Float>] = [inBuf.baseAddress!]
+                var outChannels: [UnsafeMutablePointer<Float>] = [outBuf.baseAddress!]
+                inChannels.withUnsafeMutableBufferPointer { ip in
+                    outChannels.withUnsafeMutableBufferPointer { op in
                         vDSP_biquadm(setup, ip.baseAddress!, 1, op.baseAddress!, 1, vDSP_Length(count))
                     }
                 }
@@ -260,10 +258,10 @@ final class EngineCoefficientTests: XCTestCase {
                     outR.withUnsafeMutableBufferPointer { opR in
                         // Channel-pointer arrays exactly as the engine's RT scratch holds
                         // them: per-channel base pointers, stride 1 (planar).
-                        let inChannels: [UnsafePointer<Float>] = [ipL.baseAddress!, ipR.baseAddress!]
-                        let outChannels: [UnsafeMutablePointer<Float>] = [opL.baseAddress!, opR.baseAddress!]
-                        inChannels.withUnsafeBufferPointer { ip in
-                            outChannels.withUnsafeBufferPointer { op in
+                        var inChannels: [UnsafePointer<Float>] = [ipL.baseAddress!, ipR.baseAddress!]
+                        var outChannels: [UnsafeMutablePointer<Float>] = [opL.baseAddress!, opR.baseAddress!]
+                        inChannels.withUnsafeMutableBufferPointer { ip in
+                            outChannels.withUnsafeMutableBufferPointer { op in
                                 vDSP_biquadm(setup, ip.baseAddress!, 1, op.baseAddress!, 1, vDSP_Length(count))
                             }
                         }

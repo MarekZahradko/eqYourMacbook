@@ -710,7 +710,7 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
     /// test (testVDSPBiquadmStereoMatchesScalarReference) is the authority. If it
     /// fails on the Mac, flip ONLY this helper (channel-major would be
     /// `(channel * sections + section) * 5`) — every builder/reader routes through it.
-    static func flatIndex(section: Int, channel: Int, channels: Int) -> Int {
+    nonisolated static func flatIndex(section: Int, channel: Int, channels: Int) -> Int {
         (section * channels + channel) * 5
     }
 
@@ -737,8 +737,8 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
     ///
     /// `channels` defaults to the engine's fixed channel count; tests build a single
     /// channel to compare against a scalar reference.
-    static func sectionCoefficients(for bands: [EQBand], sampleRate: Double,
-                                    channels: Int = EQEngine.channels) -> [Double] {
+    nonisolated static func sectionCoefficients(for bands: [EQBand], sampleRate: Double,
+                                               channels: Int = EQEngine.channels) -> [Double] {
         var out = [Double](repeating: 0, count: maxSections * 5 * channels)
         // Identity everywhere first (b0=1, rest 0), via the layout helper.
         for s in 0..<maxSections {
