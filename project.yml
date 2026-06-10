@@ -1,0 +1,58 @@
+name: eqYourMacbook
+options:
+  bundleIdPrefix: com.zdenekkops
+  deploymentTarget:
+    macOS: "14.4"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  eqYourMacbook:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Engine
+      - path: Sources/Model
+    resources:
+      - path: Resources
+        excludes:
+          - Info.plist
+          - eqYourMacbook.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: eqYourMacbook
+        PRODUCT_BUNDLE_IDENTIFIER: com.zdenekkops.eqyourmacbook
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.10"   # Swift 5 language mode (not v6 strict concurrency)
+        MACOSX_DEPLOYMENT_TARGET: "14.4"
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_ENTITLEMENTS: Resources/eqYourMacbook.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: true
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - sdk: CoreAudio.framework
+      - sdk: AudioToolbox.framework
+      - sdk: Accelerate.framework
+      - sdk: AppKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: ServiceManagement.framework
+
+  eqYourMacbookTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/eqYourMacbookTests
+    dependencies:
+      - target: eqYourMacbook
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.4"
