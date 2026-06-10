@@ -83,7 +83,7 @@ struct EQPresetData: Codable, Equatable, Sendable, Identifiable {
     var bands: [EQBand]
     /// Right channel bands. When nil, the preset is in linked (stereo) mode.
     /// When non-nil, `bands` represents the left channel and `rightBands` the right.
-    var rightBands: [EQBand]?
+    var rightBands: [EQBand]? = nil
     let isBuiltIn: Bool
 
     var isFlat: Bool {

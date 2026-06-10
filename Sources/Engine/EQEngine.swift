@@ -289,8 +289,8 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
     // Pre-allocated RT capacities (CONTRACT.md: max 16 sections, 2 channels).
     // Not `private` so the pure `sectionCoefficients` mapping (internal, tested) can
     // reference them in a default argument.
-    static let maxSections = 16
-    static let channels = 2
+    nonisolated static let maxSections = 16
+    nonisolated static let channels = 2
 
     // Sentinel sample backing the non-Optional scratch pointer arrays (FIX 9). A
     // process-lifetime single-Float allocation each, so the scratch slots always hold

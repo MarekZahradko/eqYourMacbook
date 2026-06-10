@@ -31,7 +31,7 @@ struct BandRowView: View {
                 .pickerStyle(.menu)
                 .frame(width: 80)
                 .labelsHidden()
-                .onChange(of: band.filterType) { newType in
+                .onChange(of: band.filterType) { _, newType in
                     switch newType {
                     case .lowPass, .highPass, .bandPass, .notch:
                         // Reset to Butterworth-ish slope; gain is meaningless for pass/notch.

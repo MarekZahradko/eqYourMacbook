@@ -30,13 +30,17 @@ func getDeviceUID(_ deviceID: AudioDeviceID) throws -> String {
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain
     )
-    var uid: CFString = "" as CFString
-    var size = UInt32(MemoryLayout<CFString>.size)
+    var uid: Unmanaged<CFString>? = nil
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
     try caCheck(
         AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid),
         "Failed to get device UID"
     )
-    return uid as String
+    guard let result = uid?.takeRetainedValue() else {
+        throw NSError(domain: "eqYourMacbook", code: -1,
+                      userInfo: [NSLocalizedDescriptionKey: "Device UID is nil"])
+    }
+    return result as String
 }
 
 func getDeviceName(_ deviceID: AudioDeviceID) throws -> String {
@@ -45,13 +49,17 @@ func getDeviceName(_ deviceID: AudioDeviceID) throws -> String {
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain
     )
-    var name: CFString = "" as CFString
-    var size = UInt32(MemoryLayout<CFString>.size)
+    var name: Unmanaged<CFString>? = nil
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>>.size)
     try caCheck(
         AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name),
         "Failed to get device name"
     )
-    return name as String
+    guard let result = name?.takeRetainedValue() else {
+        throw NSError(domain: "eqYourMacbook", code: -1,
+                      userInfo: [NSLocalizedDescriptionKey: "Device name is nil"])
+    }
+    return result as String
 }
 
 // MARK: - Transport type & output-stream introspection
