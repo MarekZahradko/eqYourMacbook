@@ -11,8 +11,11 @@ A tiny menu-bar parametric EQ for the MacBook's built-in speakers. No Dock icon,
 
 ```sh
 ./scripts/build.sh   # generates project then builds (Debug)
-open build/Debug/eqYourMacbook.app
+./scripts/run.sh     # finds the built app and opens it
 ```
+
+`run.sh` asks Xcode where the build output went (it lives under DerivedData,
+not in the repo), so you don't have to look for the .app yourself.
 
 ## Run unit tests
 
@@ -27,4 +30,5 @@ open build/Debug/eqYourMacbook.app
 
 ## Status
 
-Pre-build development (M0 skeleton). See PLAN.md §4 for milestone roadmap.
+Builds and runs; all unit tests pass. Core EQ verified by ear on the built-in
+speakers (M1). See PLAN.md §4 for the milestone roadmap and what is still open.
