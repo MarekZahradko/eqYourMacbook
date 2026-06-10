@@ -10,6 +10,17 @@ struct BandListView: View {
     @State private var savePresetName: String = ""
     @State private var showingSaveField: Bool = false
 
+    private static let rowHeight: CGFloat = 54
+    private static let maxVisibleRows = 5
+
+    /// Explicit list height: a MenuBarExtra(.window) sizes itself to the content's
+    /// IDEAL size, and a ScrollView's ideal height is zero — with only `maxHeight`
+    /// the whole band list collapsed to nothing. Grow with the band count (one
+    /// row's worth for the empty-state text), cap at 5 rows, scroll beyond.
+    private var listHeight: CGFloat {
+        CGFloat(min(max(controller.bands.count, 1), Self.maxVisibleRows)) * Self.rowHeight
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Band list: max ~5 rows visible
@@ -30,7 +41,7 @@ struct BandListView: View {
                     }
                 }
             }
-            .frame(maxHeight: 5 * 54)  // ~5 rows at ~54 pt each
+            .frame(height: listHeight)
 
             // Footer toolbar
             HStack(spacing: 8) {
