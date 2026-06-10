@@ -293,25 +293,33 @@ The whole tree (M0–M5 feature scope) is written and has passed two adversarial
 review waves + a fix wave + a consistency wave, but NO compiler has seen it.
 Work through this in order on the Mac:
 
-1. `brew install xcodegen` → `scripts/build.sh` — fix compile errors until green.
-   Reviews predict few; most-likely spots are flagged inline with comments.
-2. `scripts/test.sh` — the unit tests are the contract:
-   - the 1×1 vDSP canary pins the biquad sign convention;
-   - the M=2/N=2 stereo canary ADJUDICATES section-major vs channel-major
-     coefficient layout (reviewers disagreed) — on failure flip ONLY
-     `EQEngine.flatIndex(section:channel:channels:)`.
+1. ✅ DONE 2026-06-10: `scripts/build.sh` green — zero compile errors on first build.
+2. ✅ DONE 2026-06-10: `scripts/test.sh` green (37 tests).
+   - the 1×1 vDSP canary pins the biquad sign convention — PASSED;
+   - the 2×2 stereo canary adjudicated SECTION-MAJOR layout CORRECT — `flatIndex`
+     stays as written;
+   - **runtime discovery:** `vDSP_biquadm_CreateSetup(coeffs, M, N)` takes
+     **M=SECTIONS, N=CHANNELS** — the archived vDSP Programming Guide documents
+     the opposite and is WRONG (verified empirically on-Mac; the swap crashed the
+     IOProc by making vDSP read 16 "channel" pointers from 2-slot scratch arrays).
+     The 2×2 canary is blind to this; the asymmetric canary
+     `testVDSPBiquadmCreateSetupTakesSectionsThenChannels` now pins it.
 3. SDK facts to confirm (each flagged inline in code):
-   - `CATapDescription(stereoGlobalTapButExcludeProcesses:)` bridging of
-     `[AudioObjectID]` (iqualize-proven, expect OK) and `.mutedWhenTapped` case;
+   - ✅ `CATapDescription(stereoGlobalTapButExcludeProcesses:)` bridging and
+     `.mutedWhenTapped` spelling — compiled and ran 2026-06-10;
    - `kAudioHardwarePropertyProcessObjectList` + `kAudioProcessPropertyIsRunningOutput`
      (watchdog's "is anyone else playing" discriminator); fallback if absent:
      never auto-escalate to permissionNeeded;
    - `tapDesc.isPrivate` vs `.privateTap` spelling (currently commented out —
-     aggregate-level privacy is set and sufficient).
-4. M1 listening tests (PLAN §Milestones): passthrough, seamless toggle-off,
-   **`kill -9` while playing → audio must continue** (adjudicates `.mutedWhenTapped`
-   vs iqualize's `.muted`), purple dot lifecycle, TCC prompt wording, deny-path →
-   permissionNeeded + "Open Settings" button.
+     aggregate-level privacy is set and sufficient; 2026-06-10: no stray
+     aggregate visible in `system_profiler SPAudioDataType`, so not needed so far).
+4. M1 listening tests (PLAN §Milestones): ✅ passthrough + audible EQ + live slider
+   drags verified by ear 2026-06-10; ✅ **`kill -9` while playing → audio continued
+   without interruption — `.mutedWhenTapped` ADJUDICATED CORRECT** (do not switch
+   to iqualize's `.muted`). Still open: purple dot lifecycle, TCC prompt wording,
+   deny-path → permissionNeeded + "Open Settings" button.
+   (UI fix along the way: the band list ScrollView collapsed to zero height inside
+   MenuBarExtra(.window) — needs an explicit frame height; fixed in BandListView.)
 5. M2/M3 quality: audible EQ; no crackle under parallel CPU load; slider drags
    zipper-free (SetTargetsDouble ramp constants 0.005/0.0001 are untuned guesses);
    verify in Instruments that the IOProc makes no allocations (incl. the

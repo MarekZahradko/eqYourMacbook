@@ -414,8 +414,10 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
                 ? [ownProcessObjectID] : []
             let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludeProcesses)
             tapDesc.uuid = tapUUID
-            // M1 must A/B this against .muted (audit fact #4): .mutedWhenTapped keeps
-            // audio playing if the app dies; .muted needs explicit unmute on teardown.
+            // ADJUDICATED on-Mac 2026-06-10 (M1 kill -9 test): with .mutedWhenTapped,
+            // kill -9 while music played left audio running without interruption —
+            // exactly the crash-fail-safe we want. Do NOT switch to iqualize's .muted
+            // (that one needs explicit unmute on teardown and fails the kill -9 rule).
             tapDesc.muteBehavior = .mutedWhenTapped
             tapDesc.name = "eqYourMacbook-EQ"
             // PLAN.md asks for a private tap. The ObjC property is
@@ -677,13 +679,17 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
         rtMaxSections = Self.maxSections
         let coeffs = Self.sectionCoefficients(for: bands, sampleRate: sampleRate)
         coeffs.withUnsafeBufferPointer { ptr in
-            // Header arg order is (coeffs, __M, __N) where __M = channels, __N =
-            // sections (Accelerate vDSP guide: "length 5 * M * N, where M is the
-            // number of channels and N is the number of sections"). coeffs is
-            // 5 * channels * sections doubles, section-major (see flatIndex).
+            // VERIFIED ON MAC 2026-06-10 (asymmetric-dimension probe): __M = SECTIONS
+            // (matrix rows), __N = CHANNELS (columns). The archived vDSP Programming
+            // Guide says the opposite ("M is the number of channels") and is WRONG —
+            // with (channels, sections) here, vDSP treated N=16 as the channel count
+            // and read 16 entries from the 2-slot rtInputPtrs/rtOutputPtrs arrays →
+            // wild-pointer crash inside vDSP_biquadm in the IOProc. coeffs stays
+            // 5 * channels * sections doubles, section-major (see flatIndex) — the
+            // same probe confirmed channel-varies-fastest row-major layout.
             rtBiquadSetup = vDSP_biquadm_CreateSetup(ptr.baseAddress!,
-                                                     vDSP_Length(Self.channels),
-                                                     vDSP_Length(Self.maxSections))
+                                                     vDSP_Length(Self.maxSections),
+                                                     vDSP_Length(Self.channels))
         }
     }
 
@@ -715,7 +721,8 @@ private func copyInputToOutput(inList: UnsafeMutableAudioBufferListPointer,
     }
 
     /// Pure mapping: EQBand list → flat double coefficient array in the layout
-    /// vDSP_biquadm_CreateSetup(coeffs, M=channels, N=sections) expects:
+    /// vDSP_biquadm_CreateSetup(coeffs, M=sections, N=channels) expects (M/N meaning
+    /// verified empirically on-Mac 2026-06-10; see installBiquadSetup):
     /// `5 * channels * sections` doubles, SECTION-MAJOR via `flatIndex` (channel
     /// varies fastest). Each section is 5 doubles in the order **[b0, b1, b2, a1, a2]**
     /// (header: "S, B0, B1, B2, A1, A2"). We apply the SAME cascade to both channels,

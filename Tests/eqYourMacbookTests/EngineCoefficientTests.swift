@@ -200,7 +200,7 @@ final class EngineCoefficientTests: XCTestCase {
         }
     }
 
-    // MARK: - THE DEFINITIVE CANARY: M=2 channels × N=2 sections, section-major
+    // MARK: - THE DEFINITIVE CANARY: M=2 sections × N=2 channels, section-major
     //
     // This is the authority that adjudicates SECTION-major vs CHANNEL-major on the
     // first Mac run. We build a two-section cascade of two DIFFERENT RBJ peaking
@@ -238,9 +238,12 @@ final class EngineCoefficientTests: XCTestCase {
             }
         }
 
+        // CreateSetup takes (coeffs, M=sections, N=channels) — verified on-Mac
+        // 2026-06-10 by testVDSPBiquadmCreateSetupTakesSectionsThenChannels below.
+        // (2×2 here, so the values coincide; the ORDER is sections first.)
         guard let setup = vDSP_biquadm_CreateSetup(coeffs,
-                                                   vDSP_Length(channels),
-                                                   vDSP_Length(sections)) else {
+                                                   vDSP_Length(sections),
+                                                   vDSP_Length(channels)) else {
             return XCTFail("vDSP_biquadm_CreateSetup returned nil")
         }
         defer { vDSP_biquadm_DestroySetup(setup) }
@@ -279,6 +282,62 @@ final class EngineCoefficientTests: XCTestCase {
             XCTAssertEqual(outR[i], ref[i], accuracy: 1e-4,
                            "R sample \(i): vDSP=\(outR[i]) scalar=\(ref[i]) — section/channel layout or sign mismatch")
         }
+    }
+
+    // MARK: - CANARY (argument order): CreateSetup is (coeffs, M=SECTIONS, N=CHANNELS)
+    //
+    // The stereo canary above uses 2×2, which is blind to a swapped M/N — that swap
+    // shipped and crashed in the IOProc (vDSP read N=16 "channel" pointers from the
+    // 2-slot scratch arrays). This test pins the order with ASYMMETRIC dimensions:
+    // 2 sections × 1 channel, section 0 = gain 1.0, section 1 = gain 0.5.
+    //
+    //   - Correct order (2 sections, 1 channel): one channel through a two-section
+    //     cascade → impulse out = 1.0 × 0.5 = 0.5, and out[1] (sentinel) untouched.
+    //   - Swapped order (1 section, 2 channels): vDSP would write BOTH outputs
+    //     (out0=1.0, out1=0.5) and the cascade assertion fails.
+    //
+    // NOTE: the archived vDSP Programming Guide documents M/N the other way around;
+    // the implementation (verified on-Mac 2026-06-10) wins. Do not "fix" this back
+    // to match the guide.
+    func testVDSPBiquadmCreateSetupTakesSectionsThenChannels() {
+        // Two pure-gain sections, channel count 1: [b0,b1,b2,a1,a2] per section.
+        let coeffs: [Double] = [1.0, 0, 0, 0, 0,
+                                0.5, 0, 0, 0, 0]
+        guard let setup = vDSP_biquadm_CreateSetup(coeffs,
+                                                   2,    // M = sections
+                                                   1) else {  // N = channels
+            return XCTFail("vDSP_biquadm_CreateSetup returned nil")
+        }
+        defer { vDSP_biquadm_DestroySetup(setup) }
+
+        let count = 8
+        var inA = [Float](repeating: 0, count: count); inA[0] = 1.0
+        var inB = [Float](repeating: 0, count: count); inB[0] = 1.0
+        var outA = [Float](repeating: 99, count: count)
+        var outB = [Float](repeating: 99, count: count)  // sentinel: must stay untouched
+
+        inA.withUnsafeBufferPointer { iA in
+            inB.withUnsafeBufferPointer { iB in
+                outA.withUnsafeMutableBufferPointer { oA in
+                    outB.withUnsafeMutableBufferPointer { oB in
+                        // Two pointer slots provided (like the engine's scratch), but a
+                        // correctly-built 1-channel setup must only ever read slot 0.
+                        var inChannels: [UnsafePointer<Float>] = [iA.baseAddress!, iB.baseAddress!]
+                        var outChannels: [UnsafeMutablePointer<Float>] = [oA.baseAddress!, oB.baseAddress!]
+                        inChannels.withUnsafeMutableBufferPointer { ip in
+                            outChannels.withUnsafeMutableBufferPointer { op in
+                                vDSP_biquadm(setup, ip.baseAddress!, 1, op.baseAddress!, 1, vDSP_Length(count))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        XCTAssertEqual(outA[0], 0.5, accuracy: 1e-6,
+                       "channel 0 impulse should pass a 1.0×0.5 two-section cascade — M is not being read as the section count")
+        XCTAssertEqual(outB[0], 99,
+                       "a 1-channel setup wrote to a second channel slot — N is not being read as the channel count")
     }
 
     // MARK: - Helpers
