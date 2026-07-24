@@ -1,0 +1,32 @@
+name: Release
+
+# Intentional, versioned releases only: push a git tag like `v0.1.0`.
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Test
+        run: bash scripts/test.sh
+
+      - name: Build and package (Release)
+        run: bash scripts/release.sh
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/dist/eqYourMacbook.zip
+          generate_release_notes: true

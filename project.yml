@@ -37,6 +37,12 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
+          # Personal-use distribution: ad-hoc signing (no Apple team / notarization).
+          # Reproducible locally and in CI without secrets. Hardened runtime and
+          # entitlements are preserved; a downloaded .app must have its quarantine
+          # attribute stripped before first launch (see README).
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "-"
     dependencies:
       - sdk: CoreAudio.framework
       - sdk: AudioToolbox.framework

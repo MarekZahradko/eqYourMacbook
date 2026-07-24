@@ -23,6 +23,30 @@ not in the repo), so you don't have to look for the .app yourself.
 ./scripts/test.sh
 ```
 
+## Releases
+
+Releases are cut from git tags. Pushing a `v*` tag runs the tests, builds a
+Release `.app`, and publishes it as a GitHub Release:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+To build the distributable zip locally:
+
+```sh
+./scripts/release.sh   # -> build/dist/eqYourMacbook.zip
+```
+
+The app is **ad-hoc signed** (personal-use; no Apple Developer team or
+notarization). After downloading the released `.app`, strip its quarantine
+attribute before first launch, otherwise Gatekeeper will refuse to open it:
+
+```sh
+xattr -dr com.apple.quarantine /path/to/eqYourMacbook.app
+```
+
 ## Key documents
 
 - **PLAN.md** — architecture decisions, milestones, API facts, risks
