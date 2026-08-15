@@ -16,8 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | head -1)"
+          swift --version
 
       - name: Test
         run: bash scripts/test.sh

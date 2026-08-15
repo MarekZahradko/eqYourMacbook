@@ -194,7 +194,7 @@ struct AggregateEngineStatus: Equatable {
 extension OutputDeviceEQCoordinator {
     /// Pure: decide which device IDs to stop and which (present, enabled,
     /// not-yet-running) device IDs to start, capped at maxSimultaneous.
-    static func planReconciliation(
+    nonisolated static func planReconciliation(
         catalogDevices: [(id: AudioObjectID, uid: String)],
         runningDeviceIDs: Set<AudioObjectID>,
         runningDeviceUIDs: [AudioObjectID: String],
@@ -230,7 +230,7 @@ extension OutputDeviceEQCoordinator {
 
     /// Pure: collapse per-device engine states + permission-suspicion set into
     /// AggregateEngineStatus.
-    static func aggregateStatus(
+    nonisolated static func aggregateStatus(
         engineStates: [AudioObjectID: EngineState],
         permissionSuspectedDevices: Set<AudioObjectID>
     ) -> AggregateEngineStatus {

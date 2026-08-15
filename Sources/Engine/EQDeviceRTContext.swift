@@ -73,12 +73,12 @@ final class EQDeviceRTContext {
 
     /// Sentinel sample backing the non-Optional scratch pointer arrays: a valid address
     /// until the IOProc overwrites all channel slots with real buffer pointers each callback.
-    static let sentinelSample: UnsafePointer<Float> = {
+    nonisolated(unsafe) static let sentinelSample: UnsafePointer<Float> = {
         let p = UnsafeMutablePointer<Float>.allocate(capacity: 1)
         p.initialize(to: 0)
         return UnsafePointer(p)
     }()
-    static let sentinelSampleMutable: UnsafeMutablePointer<Float> = {
+    nonisolated(unsafe) static let sentinelSampleMutable: UnsafeMutablePointer<Float> = {
         let p = UnsafeMutablePointer<Float>.allocate(capacity: 1)
         p.initialize(to: 0)
         return p

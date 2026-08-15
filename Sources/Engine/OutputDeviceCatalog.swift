@@ -90,7 +90,7 @@ struct RawDeviceInfo: Equatable {
 extension OutputDeviceCatalog {
     /// Pure policy: built-in devices first, aggregate-transport devices excluded,
     /// devices without output streams excluded, remainder in input order.
-    static func filterAndSort(_ raw: [RawDeviceInfo]) -> [OutputDeviceInfo] {
+    nonisolated static func filterAndSort(_ raw: [RawDeviceInfo]) -> [OutputDeviceInfo] {
         var builtIn: [OutputDeviceInfo] = []
         var others: [OutputDeviceInfo] = []
         for device in raw {

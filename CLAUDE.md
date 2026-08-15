@@ -3,19 +3,19 @@
 Tiny menu-bar system-wide EQ, built on the driverless macOS Core Audio
 process-tap API (no HAL driver, no .pkg, no root). Supports EQ'ing any number of
 output devices simultaneously (per-device checkboxes; built-in speakers is the
-default-enabled device on first launch) — see PLAN.md §5 "Multi-output-device EQ
-support". Personal-use app, owner: Zdeněk (communicates in Czech; all code,
-comments, and docs stay in English).
+default-enabled device on first launch) — see `docs/CONTRACT.md` and PLAN.md §1's
+multi-device blockquote. Personal-use app, owner: Zdeněk (communicates in Czech;
+all code, comments, and docs stay in English).
 
-## Current state (2026-06-10)
+## Current state (updated 2026-08-15)
 
-**Code complete but written BLIND — it has never been compiled** (developed on
-a Linux box without Xcode). It passed 2 adversarial review waves + a fix wave +
-a consistency wave, but the compiler will still find things.
-
-**The first task of any new session: work through `PLAN.md` § "First build
-session checklist"** — build, run tests, resolve the inline-flagged SDK
-uncertainties, then the M1 listening tests.
+Build and M1 listening tests (passthrough, audible EQ, `kill -9` fail-safe)
+passed on the Mac 2026-06-10 — see PLAN.md's "First build session checklist".
+M2/M3/M5 milestones (RT-load quality, autonomy/soak testing) are still open.
+The build system was since migrated off xcodegen/xcodebuild to a direct
+`swiftc` build + Swift 6 language mode, and tests off `swift test`/XCTest to a
+swift-testing `TestRunner` (see Build section below) — neither xcodegen nor a
+full Xcode.app install is needed anymore.
 
 ## Sources of truth
 
@@ -26,10 +26,17 @@ uncertainties, then the M1 listening tests.
 
 ## Build
 
+Builds directly with `swiftc` — **no full Xcode.app required**, Command Line
+Tools are enough. No `xcodegen`/`xcodebuild`/`.xcodeproj` on the build path
+(same approach as the `ClaudeMonitor` project). Tests use swift-testing via a
+`TestRunner` executable (`Package.swift`), not `swift test` — `XCTest.framework`
+only ships with full Xcode.app, `Testing.framework` ships with CLT too.
+
 ```
-brew install xcodegen        # once
-scripts/build.sh             # xcodegen generate + xcodebuild Debug
-scripts/test.sh              # unit tests
+scripts/build.sh      # swiftc -> .build/eqYourMacbook.app (Debug)
+scripts/test.sh        # swift build + run eqYourMacbookTestRunner
+scripts/install.sh     # test + build, install to /Applications, launch
+scripts/release.sh     # --release build + zip in build/dist/
 ```
 
 ## Non-negotiable rules
@@ -51,7 +58,7 @@ scripts/test.sh              # unit tests
   Resolve each against the real SDK, then update the comment.
 - Keep the MIT attribution headers in files cherry-picked from iqualize.
 - No git operations unless the user explicitly asks.
-- Swift 5 language mode (not 6) — deliberate; don't "upgrade".
+- Swift 6 language mode, default isolation `nonisolated` (see `scripts/build-config.sh`).
 
 ## Reference
 

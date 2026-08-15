@@ -8,10 +8,10 @@ Shared model types live in `Sources/Model/EQModels.swift` (cherry-picked from
 iqualize, MIT): `FilterType`, `EQBand`, `EQPresetData`. Coefficient math lives
 in `Sources/Model/BiquadResponse.swift` (cherry-picked, MIT).
 
-Language: Swift 5 language mode (NOT Swift 6 strict concurrency — we code
-without a compiler; v5 mode minimizes blind-coding hazards). Frameworks allowed:
-CoreAudio, AudioToolbox, Accelerate, Foundation, AppKit, SwiftUI,
-ServiceManagement. No third-party dependencies.
+Language: Swift 6 language mode, default isolation `nonisolated` (see
+`scripts/build-config.sh`). Frameworks allowed: CoreAudio, AudioToolbox,
+Accelerate, Foundation, AppKit, SwiftUI, ServiceManagement. No third-party
+dependencies.
 
 ## Engine module (`Sources/Engine/`)
 

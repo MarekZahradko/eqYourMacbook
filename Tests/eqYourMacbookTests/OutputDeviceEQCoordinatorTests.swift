@@ -1,15 +1,15 @@
 import CoreAudio
-import XCTest
+import Testing
 @testable import eqYourMacbook
 
 /// Tests for OutputDeviceEQCoordinator's pure decision logic — planReconciliation
 /// (stop/start policy + soft cap) and aggregateStatus (per-engine-state collapse) —
 /// with zero CoreAudio involvement.
-final class OutputDeviceEQCoordinatorTests: XCTestCase {
+@Suite struct OutputDeviceEQCoordinatorTests {
 
     // MARK: - planReconciliation
 
-    func testFifthEnabledDeviceNotStartedWhenFourAlreadyRunning() {
+    @Test func fifthEnabledDeviceNotStartedWhenFourAlreadyRunning() {
         let running: Set<AudioObjectID> = [1, 2, 3, 4]
         let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b", 3: "c", 4: "d"]
         let catalog: [(id: AudioObjectID, uid: String)] = [
@@ -23,11 +23,11 @@ final class OutputDeviceEQCoordinatorTests: XCTestCase {
             globallyEnabled: true,
             maxSimultaneous: 4)
 
-        XCTAssertTrue(plan.toStop.isEmpty)
-        XCTAssertFalse(plan.toStart.contains(5))
+        #expect(plan.toStop.isEmpty)
+        #expect(!plan.toStart.contains(5))
     }
 
-    func testRunningDeviceNoLongerInCatalogIsStopped() {
+    @Test func runningDeviceNoLongerInCatalogIsStopped() {
         let running: Set<AudioObjectID> = [1]
         let runningUIDs: [AudioObjectID: String] = [1: "a"]
         let plan = OutputDeviceEQCoordinator.planReconciliation(
@@ -38,11 +38,11 @@ final class OutputDeviceEQCoordinatorTests: XCTestCase {
             globallyEnabled: true,
             maxSimultaneous: 4)
 
-        XCTAssertEqual(plan.toStop, [1])
-        XCTAssertTrue(plan.toStart.isEmpty)
+        #expect(plan.toStop == [1])
+        #expect(plan.toStart.isEmpty)
     }
 
-    func testRunningDeviceWithUncheckedUIDIsStopped() {
+    @Test func runningDeviceWithUncheckedUIDIsStopped() {
         let running: Set<AudioObjectID> = [1]
         let runningUIDs: [AudioObjectID: String] = [1: "a"]
         let plan = OutputDeviceEQCoordinator.planReconciliation(
@@ -53,11 +53,11 @@ final class OutputDeviceEQCoordinatorTests: XCTestCase {
             globallyEnabled: true,
             maxSimultaneous: 4)
 
-        XCTAssertEqual(plan.toStop, [1])
-        XCTAssertTrue(plan.toStart.isEmpty)
+        #expect(plan.toStop == [1])
+        #expect(plan.toStart.isEmpty)
     }
 
-    func testGloballyDisabledStopsEverythingAndStartsNothing() {
+    @Test func globallyDisabledStopsEverythingAndStartsNothing() {
         let running: Set<AudioObjectID> = [1, 2]
         let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b"]
         let plan = OutputDeviceEQCoordinator.planReconciliation(
@@ -68,42 +68,42 @@ final class OutputDeviceEQCoordinatorTests: XCTestCase {
             globallyEnabled: false,
             maxSimultaneous: 4)
 
-        XCTAssertEqual(Set(plan.toStop), [1, 2])
-        XCTAssertTrue(plan.toStart.isEmpty)
+        #expect(Set(plan.toStop) == [1, 2])
+        #expect(plan.toStart.isEmpty)
     }
 
     // MARK: - aggregateStatus
 
-    func testAggregateStatusAnyRunningTrueWhenOneEngineRunning() {
+    @Test func aggregateStatusAnyRunningTrueWhenOneEngineRunning() {
         let status = OutputDeviceEQCoordinator.aggregateStatus(
             engineStates: [1: .running, 2: .stopped],
             permissionSuspectedDevices: [])
-        XCTAssertTrue(status.anyRunning)
-        XCTAssertNil(status.errorMessage)
-        XCTAssertFalse(status.permissionNeeded)
+        #expect(status.anyRunning)
+        #expect(status.errorMessage == nil)
+        #expect(!status.permissionNeeded)
     }
 
-    func testAggregateStatusSurfacesFailedMessage() {
+    @Test func aggregateStatusSurfacesFailedMessage() {
         let status = OutputDeviceEQCoordinator.aggregateStatus(
             engineStates: [1: .failed("tap creation failed")],
             permissionSuspectedDevices: [])
-        XCTAssertEqual(status.errorMessage, "tap creation failed")
-        XCTAssertFalse(status.anyRunning)
+        #expect(status.errorMessage == "tap creation failed")
+        #expect(!status.anyRunning)
     }
 
-    func testAggregateStatusPermissionNeededWhenDeviceSuspected() {
+    @Test func aggregateStatusPermissionNeededWhenDeviceSuspected() {
         let status = OutputDeviceEQCoordinator.aggregateStatus(
             engineStates: [1: .stopped],
             permissionSuspectedDevices: [1])
-        XCTAssertTrue(status.permissionNeeded)
+        #expect(status.permissionNeeded)
     }
 
-    func testAggregateStatusEmptyInputsAreAllFalseOrNil() {
+    @Test func aggregateStatusEmptyInputsAreAllFalseOrNil() {
         let status = OutputDeviceEQCoordinator.aggregateStatus(
             engineStates: [:],
             permissionSuspectedDevices: [])
-        XCTAssertFalse(status.anyRunning)
-        XCTAssertFalse(status.permissionNeeded)
-        XCTAssertNil(status.errorMessage)
+        #expect(!status.anyRunning)
+        #expect(!status.permissionNeeded)
+        #expect(status.errorMessage == nil)
     }
 }

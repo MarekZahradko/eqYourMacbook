@@ -2,18 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
+source "${REPO_ROOT}/scripts/build-config.sh"
 
-APP_DIR="$(xcodebuild \
-    -project eqYourMacbook.xcodeproj \
-    -scheme eqYourMacbook \
-    -configuration Debug \
-    -showBuildSettings 2>/dev/null \
-    | awk '$1 == "BUILT_PRODUCTS_DIR" {print $3}')"
+BUNDLE="${REPO_ROOT}/.build/${APP_NAME}.app"
 
-if [ -z "$APP_DIR" ]; then
-    echo "error: could not find build output — run scripts/build.sh first"
+if [ ! -d "${BUNDLE}" ]; then
+    echo "error: ${BUNDLE} not found — run scripts/build.sh first"
     exit 1
 fi
 
-open "$APP_DIR/eqYourMacbook.app"
+open "${BUNDLE}"

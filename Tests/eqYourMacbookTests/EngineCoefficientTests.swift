@@ -1,5 +1,5 @@
 import Accelerate
-import XCTest
+import Testing
 @testable import eqYourMacbook
 
 /// Tests for the engine's coefficient pipeline and the vDSP_biquadm sign/order
@@ -7,28 +7,28 @@ import XCTest
 /// CANARY: it empirically pins how vDSP interprets the 5 coefficients per section.
 /// If Apple's convention ever differs from what we assume, this is the test that
 /// catches it on the first Mac run.
-final class EngineCoefficientTests: XCTestCase {
+@Suite struct EngineCoefficientTests {
 
     private let sampleRate = 48_000.0
 
     // MARK: - Peaking 0 dB → identity
 
-    func testPeakingZeroGainIsIdentity() {
+    @Test func peakingZeroGainIsIdentity() {
         // A peaking (bell) filter at 0 dB gain is a no-op: H(z) == 1.
         let band = EQBand(frequency: 1000, gain: 0, bandwidth: 1.0, filterType: .parametric)
         let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
-        XCTAssertEqual(n.b0, 1, accuracy: 1e-5)
-        XCTAssertEqual(n.b1, n.a1, accuracy: 1e-5)   // numerator == denominator
-        XCTAssertEqual(n.b2, n.a2, accuracy: 1e-5)
+        #expect(abs(n.b0 - 1) <= 1e-5)
+        #expect(abs(n.b1 - n.a1) <= 1e-5)   // numerator == denominator
+        #expect(abs(n.b2 - n.a2) <= 1e-5)
         // Magnitude response is exactly flat: any probe frequency reads 0 dB.
         let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
-        XCTAssertEqual(coeffs.gainDB(at: 1000, sampleRate: sampleRate), 0, accuracy: 1e-4)
-        XCTAssertEqual(coeffs.gainDB(at: 5000, sampleRate: sampleRate), 0, accuracy: 1e-4)
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 0) <= 1e-4)
+        #expect(abs(coeffs.gainDB(at: 5000, sampleRate: sampleRate) - 0) <= 1e-4)
     }
 
     // MARK: - Vicanek matched high-shelf: exact gain anchors at f0 and Nyquist
 
-    func testHighShelfMatchesVicanekGainAnchors() {
+    @Test func highShelfMatchesVicanekGainAnchors() {
         // Matches EQPresetData.mbaTameTheHighs's first band: high-shelf @ 8000 Hz, -4 dB,
         // at 48 kHz. Vicanek's matched design anchors the corner gain at the geometric
         // mean of the DC/Nyquist plateaus (here sqrt(1 * 10^(-4/20)) → -2 dB at f0) and
@@ -38,26 +38,26 @@ final class EngineCoefficientTests: XCTestCase {
         let band = EQBand(frequency: 8000, gain: -4, bandwidth: EQBand.qToOctaves(0.9), filterType: .highShelf)
         let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
 
-        XCTAssertEqual(coeffs.gainDB(at: 8000, sampleRate: sampleRate), -2.0, accuracy: 0.5)
-        XCTAssertEqual(coeffs.gainDB(at: 20000, sampleRate: sampleRate), -4.0, accuracy: 0.3)
+        #expect(abs(coeffs.gainDB(at: 8000, sampleRate: sampleRate) - (-2.0)) <= 0.5)
+        #expect(abs(coeffs.gainDB(at: 20000, sampleRate: sampleRate) - (-4.0)) <= 0.3)
     }
 
     // MARK: - Vicanek matched low-shelf: exact gain anchors at DC/corner/Nyquist
 
-    func testLowShelfMatchesVicanekGainAnchors() {
+    @Test func lowShelfMatchesVicanekGainAnchors() {
         // Low-shelf @ 200 Hz, +6 dB, at 48 kHz. DC sits at the full plateau (+6 dB),
         // Nyquist at unity (0 dB), and the corner at the geometric-mean point (+3 dB).
         let band = EQBand(frequency: 200, gain: 6, bandwidth: 1.0, filterType: .lowShelf)
         let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
 
-        XCTAssertEqual(coeffs.gainDB(at: 20, sampleRate: sampleRate), 6.0, accuracy: 0.5)
-        XCTAssertEqual(coeffs.gainDB(at: 200, sampleRate: sampleRate), 3.0, accuracy: 0.5)
-        XCTAssertEqual(coeffs.gainDB(at: 20000, sampleRate: sampleRate), 0.0, accuracy: 0.3)
+        #expect(abs(coeffs.gainDB(at: 20, sampleRate: sampleRate) - 6.0) <= 0.5)
+        #expect(abs(coeffs.gainDB(at: 200, sampleRate: sampleRate) - 3.0) <= 0.5)
+        #expect(abs(coeffs.gainDB(at: 20000, sampleRate: sampleRate) - 0.0) <= 0.3)
     }
 
     // MARK: - Vicanek matched low-pass / high-pass: passband/stopband rolloff
 
-    func testLowPassAttenuatesAboveCutoff() {
+    @Test func lowPassAttenuatesAboveCutoff() {
         // Low-pass @ 1000 Hz, default (1.0 octave) bandwidth, at 48 kHz.
         let band = EQBand(frequency: 1000, gain: 0, bandwidth: 1.0, filterType: .lowPass)
         let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
@@ -65,27 +65,27 @@ final class EngineCoefficientTests: XCTestCase {
         // Passband (100 Hz) stays near 0 dB. Independently verified: this design's
         // passband droop at 100 Hz is well under 0.1 dB, so a 1.0 dB tolerance is
         // conservative slack for resonance-adjacent behavior, not a loosened check.
-        XCTAssertEqual(coeffs.gainDB(at: 100, sampleRate: sampleRate), 0.0, accuracy: 1.0)
+        #expect(abs(coeffs.gainDB(at: 100, sampleRate: sampleRate) - 0.0) <= 1.0)
         // 10 kHz is deep in the stopband — independently verified around -42 dB, so
         // "well attenuated" (< -15 dB) is a safe, non-brittle threshold.
-        XCTAssertLessThan(coeffs.gainDB(at: 10000, sampleRate: sampleRate), -15.0)
+        #expect(coeffs.gainDB(at: 10000, sampleRate: sampleRate) < -15.0)
     }
 
-    func testHighPassAttenuatesBelowCutoff() {
+    @Test func highPassAttenuatesBelowCutoff() {
         // High-pass @ 1000 Hz, default (1.0 octave) bandwidth, at 48 kHz — mirror of
         // the low-pass case above.
         let band = EQBand(frequency: 1000, gain: 0, bandwidth: 1.0, filterType: .highPass)
         let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
 
         // Independently verified around -40 dB at 100 Hz.
-        XCTAssertLessThan(coeffs.gainDB(at: 100, sampleRate: sampleRate), -15.0)
+        #expect(coeffs.gainDB(at: 100, sampleRate: sampleRate) < -15.0)
         // Independently verified near 0 dB (well under 0.1 dB droop) at 10 kHz.
-        XCTAssertEqual(coeffs.gainDB(at: 10000, sampleRate: sampleRate), 0.0, accuracy: 1.0)
+        #expect(abs(coeffs.gainDB(at: 10000, sampleRate: sampleRate) - 0.0) <= 1.0)
     }
 
     // MARK: - Orfanidis exact-Q peaking: regression test for the exact-Q redesign
 
-    func testPeakingNonzeroGainBandwidthEdgeIsHalfGain() {
+    @Test func peakingNonzeroGainBandwidthEdgeIsHalfGain() {
         // Peaking @ 1000 Hz, +12 dB, 1.0 octave bandwidth, at 48 kHz.
         //
         // A prior version of BiquadResponse computed a second, gain-dependent
@@ -114,41 +114,41 @@ final class EngineCoefficientTests: XCTestCase {
         let fLow = 1000.0 / pow(2.0, 0.5)   // ≈ 707.11 Hz
         let fHigh = 1000.0 * pow(2.0, 0.5)  // ≈ 1414.21 Hz
 
-        XCTAssertEqual(coeffs.gainDB(at: 1000, sampleRate: sampleRate), 12.0, accuracy: 0.3)
-        XCTAssertEqual(coeffs.gainDB(at: fLow, sampleRate: sampleRate), 6.0, accuracy: 0.1)
-        XCTAssertEqual(coeffs.gainDB(at: fHigh, sampleRate: sampleRate), 6.0, accuracy: 0.1)
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 12.0) <= 0.3)
+        #expect(abs(coeffs.gainDB(at: fLow, sampleRate: sampleRate) - 6.0) <= 0.1)
+        #expect(abs(coeffs.gainDB(at: fHigh, sampleRate: sampleRate) - 6.0) <= 0.1)
     }
 
     // MARK: - Normalization by a0 with hand-computable numbers
 
-    func testNormalizationDividesByA0() {
+    @Test func normalizationDividesByA0() {
         // Construct raw coefficients with a0 = 2 and known integers, verify the
         // normalized struct divides every term by a0.
         let raw = BiquadCoefficients(b0: 4, b1: 2, b2: 8, a0: 2, a1: 6, a2: 10)
         let n = NormalizedBiquadCoeffs(from: raw)
-        XCTAssertEqual(n.b0, 2, accuracy: 1e-6)   // 4/2
-        XCTAssertEqual(n.b1, 1, accuracy: 1e-6)   // 2/2
-        XCTAssertEqual(n.b2, 4, accuracy: 1e-6)   // 8/2
-        XCTAssertEqual(n.a1, 3, accuracy: 1e-6)   // 6/2
-        XCTAssertEqual(n.a2, 5, accuracy: 1e-6)   // 10/2
+        #expect(abs(n.b0 - 2) <= 1e-6)   // 4/2
+        #expect(abs(n.b1 - 1) <= 1e-6)   // 2/2
+        #expect(abs(n.b2 - 4) <= 1e-6)   // 8/2
+        #expect(abs(n.a1 - 3) <= 1e-6)   // 6/2
+        #expect(abs(n.a2 - 5) <= 1e-6)   // 10/2
     }
 
     // MARK: - Section builder: flat / empty → all identity
 
-    func testEmptyBandsYieldAllIdentitySections() {
+    @Test func emptyBandsYieldAllIdentitySections() {
         // Single channel keeps the layout 16*5; assertAllIdentity walks every section.
         let coeffs = EQCoefficients.sectionCoefficients(for: [], sampleRate: sampleRate, channels: 1)
-        XCTAssertEqual(coeffs.count, 16 * 5)
+        #expect(coeffs.count == 16 * 5)
         assertAllIdentity(coeffs)
     }
 
-    func testStereoLayoutIsSectionMajor() {
+    @Test func stereoLayoutIsSectionMajor() {
         // The default (2-channel) array is 5 * channels * sections doubles, laid out
         // SECTION-MAJOR (channel varies fastest) via EQCoefficients.flatIndex. We assert the
         // exact positions of a recognizable section's b0 across both channels.
         let band = EQBand(frequency: 1000, gain: 6, bandwidth: 1, filterType: .parametric)
         let coeffs = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate)
-        XCTAssertEqual(coeffs.count, 5 * 2 * 16)
+        #expect(coeffs.count == 5 * 2 * 16)
 
         let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
 
@@ -156,31 +156,31 @@ final class EngineCoefficientTests: XCTestCase {
         // section-major positions: s0ch0 at flatIndex(0,0,2)=0, s0ch1 at flatIndex(0,1,2)=5.
         let s0ch0 = EQCoefficients.flatIndex(section: 0, channel: 0, channels: 2)
         let s0ch1 = EQCoefficients.flatIndex(section: 0, channel: 1, channels: 2)
-        XCTAssertEqual(s0ch0, 0)
-        XCTAssertEqual(s0ch1, 5)
-        XCTAssertEqual(coeffs[s0ch0 + 0], Double(n.b0), accuracy: 1e-9, "s0ch0 b0")
-        XCTAssertEqual(coeffs[s0ch1 + 0], Double(n.b0), accuracy: 1e-9, "s0ch1 b0")
+        #expect(s0ch0 == 0)
+        #expect(s0ch1 == 5)
+        #expect(abs(coeffs[s0ch0 + 0] - Double(n.b0)) <= 1e-9, "s0ch0 b0")
+        #expect(abs(coeffs[s0ch1 + 0] - Double(n.b0)) <= 1e-9, "s0ch1 b0")
 
         // Section 1 (identity) for both channels — s1ch0 at index 10, s1ch1 at index 15.
         let s1ch0 = EQCoefficients.flatIndex(section: 1, channel: 0, channels: 2)
         let s1ch1 = EQCoefficients.flatIndex(section: 1, channel: 1, channels: 2)
-        XCTAssertEqual(s1ch0, 10)
-        XCTAssertEqual(s1ch1, 15)
-        XCTAssertEqual(coeffs[s1ch0 + 0], 1, accuracy: 1e-9, "s1ch0 b0 identity")
-        XCTAssertEqual(coeffs[s1ch1 + 0], 1, accuracy: 1e-9, "s1ch1 b0 identity")
+        #expect(s1ch0 == 10)
+        #expect(s1ch1 == 15)
+        #expect(abs(coeffs[s1ch0 + 0] - 1) <= 1e-9, "s1ch0 b0 identity")
+        #expect(abs(coeffs[s1ch1 + 0] - 1) <= 1e-9, "s1ch1 b0 identity")
 
         // Every section's two per-channel blocks must be identical (same EQ on L and R).
         for s in 0..<16 {
             let c0 = EQCoefficients.flatIndex(section: s, channel: 0, channels: 2)
             let c1 = EQCoefficients.flatIndex(section: s, channel: 1, channels: 2)
             for k in 0..<5 {
-                XCTAssertEqual(coeffs[c0 + k], coeffs[c1 + k], accuracy: 1e-12,
-                               "section \(s) coeff \(k): channels must match")
+                #expect(abs(coeffs[c0 + k] - coeffs[c1 + k]) <= 1e-12,
+                        "section \(s) coeff \(k): channels must match")
             }
         }
     }
 
-    func testAllMutedBandsYieldAllIdentitySections() {
+    @Test func allMutedBandsYieldAllIdentitySections() {
         let bands = [
             EQBand(frequency: 1000, gain: 6, bandwidth: 1, filterType: .parametric, muted: true),
             EQBand(frequency: 4000, gain: -6, bandwidth: 1, filterType: .highShelf, muted: true),
@@ -192,25 +192,25 @@ final class EngineCoefficientTests: XCTestCase {
     // LAYOUT-ONLY test: this reuses the same coefficient call path as the code under
     // test, so it can only catch a wrong array-copy/section-layout, NOT a wrong DSP
     // formula (that's covered independently by the gain-anchor tests below).
-    func testActiveBandPopulatesFirstSectionRestIdentity() {
+    @Test func activeBandPopulatesFirstSectionRestIdentity() {
         let band = EQBand(frequency: 1000, gain: 6, bandwidth: 1, filterType: .parametric)
         let coeffs = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate, channels: 1)
 
         // Section 0 must equal the normalized RBJ coefficients in [b0,b1,b2,a1,a2] order.
         let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
-        XCTAssertEqual(coeffs[0], Double(n.b0), accuracy: 1e-6)
-        XCTAssertEqual(coeffs[1], Double(n.b1), accuracy: 1e-6)
-        XCTAssertEqual(coeffs[2], Double(n.b2), accuracy: 1e-6)
-        XCTAssertEqual(coeffs[3], Double(n.a1), accuracy: 1e-6)
-        XCTAssertEqual(coeffs[4], Double(n.a2), accuracy: 1e-6)
+        #expect(abs(coeffs[0] - Double(n.b0)) <= 1e-6)
+        #expect(abs(coeffs[1] - Double(n.b1)) <= 1e-6)
+        #expect(abs(coeffs[2] - Double(n.b2)) <= 1e-6)
+        #expect(abs(coeffs[3] - Double(n.a1)) <= 1e-6)
+        #expect(abs(coeffs[4] - Double(n.a2)) <= 1e-6)
 
         // Sections 1..15 are identity passthrough.
         for s in 1..<16 {
-            XCTAssertEqual(coeffs[s * 5 + 0], 1, accuracy: 1e-9)
-            XCTAssertEqual(coeffs[s * 5 + 1], 0, accuracy: 1e-9)
-            XCTAssertEqual(coeffs[s * 5 + 2], 0, accuracy: 1e-9)
-            XCTAssertEqual(coeffs[s * 5 + 3], 0, accuracy: 1e-9)
-            XCTAssertEqual(coeffs[s * 5 + 4], 0, accuracy: 1e-9)
+            #expect(abs(coeffs[s * 5 + 0] - 1) <= 1e-9)
+            #expect(abs(coeffs[s * 5 + 1] - 0) <= 1e-9)
+            #expect(abs(coeffs[s * 5 + 2] - 0) <= 1e-9)
+            #expect(abs(coeffs[s * 5 + 3] - 0) <= 1e-9)
+            #expect(abs(coeffs[s * 5 + 4] - 0) <= 1e-9)
         }
     }
 
@@ -220,45 +220,45 @@ final class EngineCoefficientTests: XCTestCase {
     // change sectionCoefficients' output (muted bands are skipped). A cache keyed only
     // on `bands == previous.bands` would treat a mute toggle as a no-op cache hit and
     // silently keep the old (unmuted) coefficients — regression test for that bug.
-    func testMuteToggleBypassesCache() {
+    @Test func muteToggleBypassesCache() {
         var band = EQBand(frequency: 1000, gain: 6, bandwidth: 1, filterType: .parametric)
         band.muted = false
         let unmuted = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate, channels: 1)
-        XCTAssertNotEqual(unmuted[0], 1, accuracy: 1e-9,
+        #expect(abs(unmuted[0] - 1) > 1e-9,
             "sanity: an active +6dB band's b0 should not equal the identity value")
 
         band.muted = true
         let muted = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate, channels: 1)
         // Muted → identity passthrough in section 0.
-        XCTAssertEqual(muted[0], 1, accuracy: 1e-9)
-        XCTAssertEqual(muted[1], 0, accuracy: 1e-9)
-        XCTAssertEqual(muted[2], 0, accuracy: 1e-9)
-        XCTAssertEqual(muted[3], 0, accuracy: 1e-9)
-        XCTAssertEqual(muted[4], 0, accuracy: 1e-9)
+        #expect(abs(muted[0] - 1) <= 1e-9)
+        #expect(abs(muted[1] - 0) <= 1e-9)
+        #expect(abs(muted[2] - 0) <= 1e-9)
+        #expect(abs(muted[3] - 0) <= 1e-9)
+        #expect(abs(muted[4] - 0) <= 1e-9)
 
         band.muted = false
         let unmutedAgain = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate, channels: 1)
         for i in 0..<5 {
-            XCTAssertEqual(unmutedAgain[i], unmuted[i], accuracy: 1e-9,
+            #expect(abs(unmutedAgain[i] - unmuted[i]) <= 1e-9,
                 "toggling mute back off must restore the original active-band coefficients, not a stale cached value")
         }
     }
 
     // MARK: - Clamping: 20 bands → 16 sections, the 4 overflow bands dropped
 
-    func testClampsTo16Sections() {
+    @Test func clampsTo16Sections() {
         var bands: [EQBand] = []
         for i in 0..<20 {
             bands.append(EQBand(frequency: Float(100 * (i + 1)), gain: 3,
                                 bandwidth: 1, filterType: .parametric))
         }
         let coeffs = EQCoefficients.sectionCoefficients(for: bands, sampleRate: sampleRate, channels: 1)
-        XCTAssertEqual(coeffs.count, 16 * 5)
+        #expect(coeffs.count == 16 * 5)
         // All 16 sections should be NON-identity (every one was filled by a band).
         for s in 0..<16 {
             let isIdentity = coeffs[s * 5 + 0] == 1 && coeffs[s * 5 + 1] == 0
                 && coeffs[s * 5 + 2] == 0 && coeffs[s * 5 + 3] == 0 && coeffs[s * 5 + 4] == 0
-            XCTAssertFalse(isIdentity, "section \(s) should be an active band, not identity")
+            #expect(!isIdentity, "section \(s) should be an active band, not identity")
         }
     }
 
@@ -274,7 +274,7 @@ final class EngineCoefficientTests: XCTestCase {
     // vDSP subtracts the a-terms internally, so a1/a2 are passed UN-negated. (The
     // multi-channel/multi-section LAYOUT is pinned separately by the definitive stereo
     // canary testVDSPBiquadmStereoMatchesScalarReference below.)
-    func testVDSPBiquadmMatchesScalarReference() {
+    @Test func vDSPBiquadmMatchesScalarReference() {
         let band = EQBand(frequency: 2000, gain: 6, bandwidth: 1.0, filterType: .parametric)
         let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
 
@@ -288,7 +288,8 @@ final class EngineCoefficientTests: XCTestCase {
         // --- vDSP path: single-section, single-channel, stride 1.
         let sectionCoeffs: [Double] = [b0, b1, b2, a1, a2]
         guard let setup = vDSP_biquadm_CreateSetup(sectionCoeffs, 1, 1) else {
-            return XCTFail("vDSP_biquadm_CreateSetup returned nil")
+            Issue.record("vDSP_biquadm_CreateSetup returned nil")
+            return
         }
         defer { vDSP_biquadm_DestroySetup(setup) }
 
@@ -321,8 +322,8 @@ final class EngineCoefficientTests: XCTestCase {
 
         // Compare the first 32 samples (impulse tail has decayed well below 1e-4).
         for i in 0..<32 {
-            XCTAssertEqual(vdspOut[i], refOut[i], accuracy: 1e-4,
-                           "sample \(i): vDSP=\(vdspOut[i]) scalar=\(refOut[i]) — sign/order convention mismatch")
+            #expect(abs(vdspOut[i] - refOut[i]) <= 1e-4,
+                    "sample \(i): vDSP=\(vdspOut[i]) scalar=\(refOut[i]) — sign/order convention mismatch")
         }
     }
 
@@ -339,7 +340,7 @@ final class EngineCoefficientTests: XCTestCase {
     // If this FAILS on the Mac, the layout is wrong: flip ONLY EQCoefficients.flatIndex
     // (channel-major would be `(channel * sections + section) * 5`); nothing else
     // changes, because every builder/reader routes through that helper.
-    func testVDSPBiquadmStereoMatchesScalarReference() {
+    @Test func vDSPBiquadmStereoMatchesScalarReference() {
         let channels = 2
         let sections = 2
 
@@ -370,7 +371,8 @@ final class EngineCoefficientTests: XCTestCase {
         guard let setup = vDSP_biquadm_CreateSetup(coeffs,
                                                    vDSP_Length(sections),
                                                    vDSP_Length(channels)) else {
-            return XCTFail("vDSP_biquadm_CreateSetup returned nil")
+            Issue.record("vDSP_biquadm_CreateSetup returned nil")
+            return
         }
         defer { vDSP_biquadm_DestroySetup(setup) }
 
@@ -403,10 +405,10 @@ final class EngineCoefficientTests: XCTestCase {
         let ref = scalarCascade(impulseLength: count, sectionA: nA, sectionB: nB)
 
         for i in 0..<32 {
-            XCTAssertEqual(outL[i], ref[i], accuracy: 1e-4,
-                           "L sample \(i): vDSP=\(outL[i]) scalar=\(ref[i]) — section/channel layout or sign mismatch")
-            XCTAssertEqual(outR[i], ref[i], accuracy: 1e-4,
-                           "R sample \(i): vDSP=\(outR[i]) scalar=\(ref[i]) — section/channel layout or sign mismatch")
+            #expect(abs(outL[i] - ref[i]) <= 1e-4,
+                    "L sample \(i): vDSP=\(outL[i]) scalar=\(ref[i]) — section/channel layout or sign mismatch")
+            #expect(abs(outR[i] - ref[i]) <= 1e-4,
+                    "R sample \(i): vDSP=\(outR[i]) scalar=\(ref[i]) — section/channel layout or sign mismatch")
         }
     }
 
@@ -425,14 +427,15 @@ final class EngineCoefficientTests: XCTestCase {
     // NOTE: the archived vDSP Programming Guide documents M/N the other way around;
     // the implementation (verified on-Mac 2026-06-10) wins. Do not "fix" this back
     // to match the guide.
-    func testVDSPBiquadmCreateSetupTakesSectionsThenChannels() {
+    @Test func vDSPBiquadmCreateSetupTakesSectionsThenChannels() {
         // Two pure-gain sections, channel count 1: [b0,b1,b2,a1,a2] per section.
         let coeffs: [Double] = [1.0, 0, 0, 0, 0,
                                 0.5, 0, 0, 0, 0]
         guard let setup = vDSP_biquadm_CreateSetup(coeffs,
                                                    2,    // M = sections
                                                    1) else {  // N = channels
-            return XCTFail("vDSP_biquadm_CreateSetup returned nil")
+            Issue.record("vDSP_biquadm_CreateSetup returned nil")
+            return
         }
         defer { vDSP_biquadm_DestroySetup(setup) }
 
@@ -460,10 +463,10 @@ final class EngineCoefficientTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(outA[0], 0.5, accuracy: 1e-6,
-                       "channel 0 impulse should pass a 1.0×0.5 two-section cascade — M is not being read as the section count")
-        XCTAssertEqual(outB[0], 99,
-                       "a 1-channel setup wrote to a second channel slot — N is not being read as the channel count")
+        #expect(abs(outA[0] - 0.5) <= 1e-6,
+                "channel 0 impulse should pass a 1.0×0.5 two-section cascade — M is not being read as the section count")
+        #expect(outB[0] == 99,
+                "a 1-channel setup wrote to a second channel slot — N is not being read as the channel count")
     }
 
     // MARK: - Helpers
@@ -493,14 +496,15 @@ final class EngineCoefficientTests: XCTestCase {
 
     // Checks every 5-double block, so it is layout- and channel-count-agnostic for
     // the all-identity case; the "section" label is only accurate for channels == 1.
-    private func assertAllIdentity(_ coeffs: [Double], file: StaticString = #filePath, line: UInt = #line) {
+    // sourceLocation defaults to the caller's site so failures point at the real test.
+    private func assertAllIdentity(_ coeffs: [Double], sourceLocation: SourceLocation = #_sourceLocation) {
         let sections = coeffs.count / 5
         for s in 0..<sections {
-            XCTAssertEqual(coeffs[s * 5 + 0], 1, accuracy: 1e-9, "section \(s) b0", file: file, line: line)
-            XCTAssertEqual(coeffs[s * 5 + 1], 0, accuracy: 1e-9, "section \(s) b1", file: file, line: line)
-            XCTAssertEqual(coeffs[s * 5 + 2], 0, accuracy: 1e-9, "section \(s) b2", file: file, line: line)
-            XCTAssertEqual(coeffs[s * 5 + 3], 0, accuracy: 1e-9, "section \(s) a1", file: file, line: line)
-            XCTAssertEqual(coeffs[s * 5 + 4], 0, accuracy: 1e-9, "section \(s) a2", file: file, line: line)
+            #expect(abs(coeffs[s * 5 + 0] - 1) <= 1e-9, "section \(s) b0", sourceLocation: sourceLocation)
+            #expect(abs(coeffs[s * 5 + 1] - 0) <= 1e-9, "section \(s) b1", sourceLocation: sourceLocation)
+            #expect(abs(coeffs[s * 5 + 2] - 0) <= 1e-9, "section \(s) b2", sourceLocation: sourceLocation)
+            #expect(abs(coeffs[s * 5 + 3] - 0) <= 1e-9, "section \(s) a1", sourceLocation: sourceLocation)
+            #expect(abs(coeffs[s * 5 + 4] - 0) <= 1e-9, "section \(s) a2", sourceLocation: sourceLocation)
         }
     }
 }

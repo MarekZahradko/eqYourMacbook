@@ -1,4 +1,5 @@
-import XCTest
+import Testing
+import Foundation
 @testable import eqYourMacbook
 
 // MARK: - DisplayStatus derivation
@@ -8,160 +9,157 @@ import XCTest
 // reconciled by OutputDeviceEQCoordinator), not a pure function of one route. What
 // remains pure and testable is the aggregate status derivation below.
 
-final class DisplayStatusTests: XCTestCase {
+@Suite struct DisplayStatusTests {
 
-    func testDisabledAlwaysDisabled() {
+    @Test func disabledAlwaysDisabled() {
         let status = EQController.deriveStatus(
             isEnabled: false,
             permissionSuspected: true,
             errorMessage: "some error"
         )
-        XCTAssertEqual(status, .disabled)
+        #expect(status == .disabled)
     }
 
-    func testPermissionNeeded() {
+    @Test func permissionNeeded() {
         let status = EQController.deriveStatus(
             isEnabled: true,
             permissionSuspected: true,
             errorMessage: nil
         )
-        XCTAssertEqual(status, .permissionNeeded)
+        #expect(status == .permissionNeeded)
     }
 
-    func testActiveWhenEnabledNoIssues() {
+    @Test func activeWhenEnabledNoIssues() {
         let status = EQController.deriveStatus(
             isEnabled: true,
             permissionSuspected: false,
             errorMessage: nil
         )
-        XCTAssertEqual(status, .active)
+        #expect(status == .active)
     }
 
-    func testErrorState() {
+    @Test func errorState() {
         let msg = "device not found"
         let status = EQController.deriveStatus(
             isEnabled: true,
             permissionSuspected: false,
             errorMessage: msg
         )
-        XCTAssertEqual(status, .error(msg))
+        #expect(status == .error(msg))
     }
 
     // TCC denial causes an engine's start() to fail; permissionSuspected must win over
     // errorMessage so the user sees the actionable "grant permission" message, not a
     // generic error string.
-    func testPermissionSuspectedBeatsError() {
+    @Test func permissionSuspectedBeatsError() {
         let status = EQController.deriveStatus(
             isEnabled: true,
             permissionSuspected: true,
             errorMessage: "aggregate device error"
         )
-        XCTAssertEqual(status, .permissionNeeded)
+        #expect(status == .permissionNeeded)
     }
 }
 
 // MARK: - suggestFrequency static
 
-final class SuggestFrequencyTests: XCTestCase {
+@Suite struct SuggestFrequencyTests {
 
-    func testEmptyBandsReturns1kHz() {
+    @Test func emptyBandsReturns1kHz() {
         let freq = EQPresetData.suggestFrequency(for: [])
-        XCTAssertEqual(freq, 1000)
+        #expect(freq == 1000)
     }
 
-    func testSingleLowBandSuggestsElsewhere() {
+    @Test func singleLowBandSuggestsElsewhere() {
         // One band at 80 Hz: the largest gap is 80–20000, so suggestion is well above 80.
         let bands = [EQBand(frequency: 80, gain: 0)]
         let freq = EQPresetData.suggestFrequency(for: bands)
-        XCTAssertGreaterThan(freq, 80,
+        #expect(freq > 80,
             "With a band at 80 Hz the suggestion should be somewhere higher in the spectrum")
-        XCTAssertLessThanOrEqual(freq, 20000)
+        #expect(freq <= 20000)
     }
 
-    func testInstanceMethodDelegatesToStatic() {
+    @Test func instanceMethodDelegatesToStatic() {
         let bands = [EQBand(frequency: 1000, gain: 0)]
         let preset = EQPresetData(id: UUID(), name: "", bands: bands, isBuiltIn: false)
-        XCTAssertEqual(preset.suggestNewBandFrequency(),
-                       EQPresetData.suggestFrequency(for: bands))
+        #expect(preset.suggestNewBandFrequency() == EQPresetData.suggestFrequency(for: bands))
     }
 
-    func testResultClampedToAudibleRange() {
+    @Test func resultClampedToAudibleRange() {
         // A band at 20 kHz: next suggestion would exceed range without clamp.
         let bands = [EQBand(frequency: 20000, gain: 0)]
         let freq = EQPresetData.suggestFrequency(for: bands)
-        XCTAssertGreaterThanOrEqual(freq, 20)
-        XCTAssertLessThanOrEqual(freq, 20000)
+        #expect(freq >= 20)
+        #expect(freq <= 20000)
     }
 }
 
 // MARK: - PresetStore round-trip
 
-final class PresetStoreTests: XCTestCase {
+@Suite final class PresetStoreTests {
 
     private var store: PresetStore!
     private let suiteName = "com.zdenekkops.eqyourmacbook.test.\(UUID().uuidString)"
 
-    override func setUp() {
-        super.setUp()
+    init() {
         store = PresetStore(defaults: UserDefaults(suiteName: suiteName)!)
     }
 
-    override func tearDown() {
+    deinit {
         UserDefaults().removePersistentDomain(forName: suiteName)
-        super.tearDown()
     }
 
-    func testSaveAndRetrieve() {
+    @Test func saveAndRetrieve() {
         let bands = [EQBand(frequency: 500, gain: -3, bandwidth: 1.5, filterType: .parametric)]
         store.save(name: "My Preset", bands: bands)
 
         let found = store.all.first(where: { $0.name == "My Preset" })
-        XCTAssertNotNil(found)
-        XCTAssertEqual(found?.bands.count, 1)
-        XCTAssertEqual(found?.bands.first?.frequency, 500)
-        XCTAssertEqual(found?.bands.first?.gain, -3)
+        #expect(found != nil)
+        #expect(found?.bands.count == 1)
+        #expect(found?.bands.first?.frequency == 500)
+        #expect(found?.bands.first?.gain == -3)
     }
 
-    func testDeleteCustomPreset() {
+    @Test func deleteCustomPreset() {
         store.save(name: "To Delete", bands: [EQBand(frequency: 1000, gain: 0)])
         let preset = store.customPresets.first!
         store.delete(id: preset.id)
-        XCTAssertTrue(store.customPresets.isEmpty)
+        #expect(store.customPresets.isEmpty)
     }
 
-    func testBuiltInsSurviveDelete() {
+    @Test func builtInsSurviveDelete() {
         for p in EQPresetData.builtInPresets {
             store.delete(id: p.id)
         }
         let builtIns = store.all.filter(\.isBuiltIn)
-        XCTAssertEqual(builtIns.count, EQPresetData.builtInPresets.count)
+        #expect(builtIns.count == EQPresetData.builtInPresets.count)
     }
 
-    func testBuiltInsUndeletable() {
+    @Test func builtInsUndeletable() {
         let initial = store.all.count
         for p in EQPresetData.builtInPresets {
             store.delete(id: p.id)
         }
-        XCTAssertEqual(store.all.count, initial, "Built-in presets must not be removable")
+        #expect(store.all.count == initial, "Built-in presets must not be removable")
     }
 
-    func testPersistenceAcrossInstances() {
+    @Test func persistenceAcrossInstances() {
         let defaults = UserDefaults(suiteName: suiteName)!
         let bands = [EQBand(frequency: 250, gain: 2, bandwidth: 0.5, filterType: .lowShelf)]
         store.save(name: "Persisted", bands: bands)
 
         let store2 = PresetStore(defaults: defaults)
         let found = store2.customPresets.first(where: { $0.name == "Persisted" })
-        XCTAssertNotNil(found)
-        XCTAssertEqual(found?.bands.first?.filterType, .lowShelf)
+        #expect(found != nil)
+        #expect(found?.bands.first?.filterType == .lowShelf)
     }
 }
 
 // MARK: - Band JSON round-trip
 
-final class BandCodableTests: XCTestCase {
+@Suite struct BandCodableTests {
 
-    func testRoundTripWithNonDefaultFields() throws {
+    @Test func roundTripWithNonDefaultFields() throws {
         let original = EQBand(
             frequency: 440,
             gain: 6.5,
@@ -172,17 +170,17 @@ final class BandCodableTests: XCTestCase {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(EQBand.self, from: data)
 
-        XCTAssertEqual(decoded.frequency, original.frequency)
-        XCTAssertEqual(decoded.gain, original.gain)
-        XCTAssertEqual(decoded.bandwidth, original.bandwidth, accuracy: 0.001)
-        XCTAssertEqual(decoded.filterType, original.filterType)
+        #expect(decoded.frequency == original.frequency)
+        #expect(decoded.gain == original.gain)
+        #expect(abs(decoded.bandwidth - original.bandwidth) <= 0.001)
+        #expect(decoded.filterType == original.filterType)
         // muted is runtime-only — always false after decode (by design in EQBand)
-        XCTAssertFalse(decoded.muted)
+        #expect(!decoded.muted)
         // id is freshly minted on decode — must differ
-        XCTAssertNotEqual(decoded.id, original.id)
+        #expect(decoded.id != original.id)
     }
 
-    func testArrayRoundTrip() throws {
+    @Test func arrayRoundTrip() throws {
         let bands: [EQBand] = [
             EQBand(frequency: 100, gain: -6, bandwidth: 2.0, filterType: .lowShelf),
             EQBand(frequency: 4000, gain: 3, bandwidth: 1.0, filterType: .parametric),
@@ -190,9 +188,9 @@ final class BandCodableTests: XCTestCase {
         ]
         let data = try JSONEncoder().encode(bands)
         let decoded = try JSONDecoder().decode([EQBand].self, from: data)
-        XCTAssertEqual(decoded.count, bands.count)
+        #expect(decoded.count == bands.count)
         for (a, b) in zip(decoded, bands) {
-            XCTAssertEqual(a, b)  // EQBand.== ignores id and muted
+            #expect(a == b)  // EQBand.== ignores id and muted
         }
     }
 }

@@ -1,7 +1,8 @@
 # macOS
 .DS_Store
 
-# Xcode project — generated from project.yml via xcodegen
+# Xcode project — not used by the build (see scripts/build.sh), kept out of
+# git in case anyone generates one locally for IDE browsing
 *.xcodeproj/
 *.xcworkspace/
 xcuserdata/

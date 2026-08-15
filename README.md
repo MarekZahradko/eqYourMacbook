@@ -4,18 +4,24 @@ A tiny menu-bar parametric EQ for the MacBook's built-in speakers. No Dock icon,
 
 ## Build prerequisites
 
-- macOS 14.4+ (Sequoia or Tahoe), Xcode 16+
-- `brew install xcodegen`
+- macOS 14.4+ (Sequoia or Tahoe)
+- Command Line Tools only — **no full Xcode.app required** (`xcode-select --install`)
 
-## Build and run
+The app is built directly with `swiftc` (see `scripts/build.sh`); SPM
+(`Package.swift`) is used only to run unit tests. No `xcodebuild`, no
+`xcodegen`, no `.xcodeproj` on the build path.
+
+## Build, install, and run
 
 ```sh
-./scripts/build.sh   # generates project then builds (Debug)
-./scripts/run.sh     # finds the built app and opens it
+./scripts/build.sh     # builds .build/eqYourMacbook.app (Debug)
+./scripts/run.sh       # opens .build/eqYourMacbook.app
+./scripts/install.sh   # test + build, installs to /Applications, launches it
 ```
 
-`run.sh` asks Xcode where the build output went (it lives under DerivedData,
-not in the repo), so you don't have to look for the .app yourself.
+`install.sh` is the one to use for real listening/M1 tests: it installs a
+genuine `/Applications/eqYourMacbook.app` you can `kill -9` while it's running,
+rather than a build-directory binary.
 
 ## Run unit tests
 
