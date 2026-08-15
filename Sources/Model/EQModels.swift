@@ -29,6 +29,12 @@ enum FilterType: String, Codable, CaseIterable, Equatable, Sendable {
         case .notch:      return "Notch"
         }
     }
+
+    /// Filter types for which `gain` has no meaning — these shape the frequency
+    /// response purely via cutoff/bandwidth, with no separate amplitude control.
+    /// SINGLE POINT OF TRUTH: BiquadResponse (DSP-boundary clamp) and BandRowView
+    /// (UI disable/reset) both read this rather than re-enumerating the case set.
+    static let gainless: Set<FilterType> = [.bandPass, .notch, .lowPass, .highPass]
 }
 
 // MARK: - EQ Band
@@ -67,7 +73,11 @@ struct EQBand: Codable, Equatable, Sendable, Identifiable {
         frequency = try container.decode(Float.self, forKey: .frequency).clamped(to: Self.frequencyRange)
         gain = try container.decode(Float.self, forKey: .gain).clamped(to: Self.gainRange)
         bandwidth = try container.decode(Float.self, forKey: .bandwidth).clamped(to: Self.bandwidthRange)
-        filterType = try container.decodeIfPresent(FilterType.self, forKey: .filterType) ?? .parametric
+        // Decoded as a raw String first: decodeIfPresent(FilterType.self, ...) throws
+        // (rather than returning nil) when the key is present but the value doesn't
+        // match any case, so it alone can't guard against a corrupted/unknown filterType.
+        let rawFilterType = try container.decodeIfPresent(String.self, forKey: .filterType)
+        filterType = rawFilterType.flatMap(FilterType.init(rawValue:)) ?? .parametric
         muted = false
         id = UUID()
     }
@@ -99,6 +109,10 @@ struct EQPresetData: Codable, Equatable, Sendable, Identifiable {
 extension EQPresetData {
     static let defaultFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
-    static let maxBandCount = 16    // CONTRACT.md upper bound; 0 bands = flat passthrough allowed
+    /// CONTRACT.md upper bound; 0 bands = flat passthrough allowed.
+    /// CANONICAL for this ceiling — EQCoefficients.maxSections (Sources/Engine) mirrors
+    /// it rather than re-declaring 16 independently, since the RT coefficient buffer
+    /// must be sized to hold at least this many bands.
+    static let maxBandCount = 16
     static let minBandCount = 0
 }

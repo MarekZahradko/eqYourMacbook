@@ -52,6 +52,9 @@ enum EngineState: Equatable {
     func engine(_ engine: EQDeviceEngine, didChangeState state: EngineState)
     // Watchdog rebuilt once and input is still all-zero → TCC denial likely.
     func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine)
+    // Lets the coordinator answer this once (short-TTL cached) for all engines'
+    // watchdogs instead of each engine re-querying the CoreAudio process list.
+    func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool
 }
 
 @MainActor final class EQDeviceEngine {
@@ -89,10 +92,17 @@ enum EngineState: Equatable {
 }
 ```
 
-`CoreAudioTapServicing` (`Sources/Engine/EQDeviceEngine.swift`) is a narrow testability
-seam wrapping only the CoreAudio calls `start()`/`stop()` make (create/destroy tap,
-create/destroy aggregate, create/destroy IOProc, start/stop device). `LiveCoreAudioTapService`
-is the default, real implementation; production call sites never pass anything else.
+`CoreAudioTapServicing` (`Sources/Engine/CoreAudioTapServicing.swift`) is a narrow testability
+seam wrapping the CoreAudio calls `start()`/`stop()` make (create/destroy tap,
+create/destroy aggregate, create/destroy IOProc, start/stop device), plus the two read-only
+CoreAudio queries `performStart()` depends on for its format-verification/sample-rate steps
+(`getStreamFormat`, `getDeviceNominalSampleRate` — mirroring the free functions of the same
+name in `CoreAudioHelpers.swift`, which `LiveCoreAudioTapService` forwards to unchanged).
+Without these two also going through the seam, a test double could never reach `.running`
+(a synthetic aggregate device ID isn't a real HAL object, so the un-mediated
+`AudioObjectGetPropertyData` read always fails) nor simulate a format-mismatch failure.
+`LiveCoreAudioTapService` is the default, real implementation; production call sites never
+pass anything else.
 
 IMPORTANT (open risk, §5): a `stereoGlobalTapButExcludeProcesses` tap captures ALL
 system audio (minus this app's own process). N enabled devices → N taps, all seeing
@@ -164,7 +174,21 @@ struct AggregateEngineStatus: Equatable {
     var errorMessage: String?
 }
 
-@MainActor final class OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
+/// Testability seam: EQController depends on this protocol, not the concrete
+/// class, so tests can substitute a fake instead of a live coordinator (which
+/// would otherwise register a real CoreAudio device listener and start taps).
+@MainActor protocol OutputDeviceEQCoordinating: AnyObject {
+    var onAggregateStatusChanged: ((AggregateEngineStatus) -> Void)? { get set }
+    var onDeviceRowsChanged: (([DeviceRowViewModel]) -> Void)? { get set }
+    func start()
+    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID)
+    func setGloballyEnabled(_ enabled: Bool)
+    func updateBands(_ bands: [EQBand])
+    func updateBypass(_ bypassed: Bool)
+    func setGainStagingEnabled(_ enabled: Bool)
+}
+
+@MainActor final class OutputDeviceEQCoordinator: EQDeviceEngineDelegate, OutputDeviceEQCoordinating {
     private(set) var deviceRows: [DeviceRowViewModel]
     private(set) var enabledDeviceUIDs: Set<String>   // persisted, keyed by device UID
     var onDeviceRowsChanged: (([DeviceRowViewModel]) -> Void)?
@@ -216,6 +240,11 @@ with just the built-in speakers' UID once the catalog discovers it.
     @Published private(set) var status: DisplayStatus
 
     func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID)
+
+    init(coordinator: OutputDeviceEQCoordinating = OutputDeviceEQCoordinator(),
+         defaults: UserDefaults = .standard)
+    nonisolated static func statusDetail(for status: DisplayStatus, runningDeviceCount: Int) -> String
+    var statusDetail: String { get }   // = Self.statusDetail(for: status, runningDeviceCount:)
 }
 
 enum DisplayStatus: Equatable {
@@ -236,8 +265,12 @@ that, and `EQController.statusDetail` for the human-readable running count).
 
 Persistence: `UserDefaults.standard`, keys prefixed `eqym.` (`eqym.bands`,
 `eqym.isEnabled`, `eqym.customPresets`), JSON-encoded via Codable. Band count
-limit in UI: 0–16 (zero bands = identity passthrough; the Flat preset is empty).
-Gain UI range ±24 dB (constant `maxGainDB` in one place).
+limit in UI: 0–16 (zero bands = identity passthrough; the Flat preset is empty;
+the 16 ceiling is `EQPresetData.maxBandCount`, which `EQCoefficients.maxSections`
+mirrors — see Engine module section above).
+Gain UI range ±24 dB, canonically `EQBand.gainRange` (Sources/Model/EQModels.swift);
+`EQCurveView.UIConstants.maxGainDB` derives from its `upperBound` rather than
+re-declaring 24 independently.
 
 UI per PLAN.md: `MenuBarExtra` `.window` style, curve Canvas (|H(f)| evaluated
 from biquad coefficients over log grid 20 Hz–20 kHz), band rows, master toggle,

@@ -18,6 +18,37 @@
 import Accelerate
 import AudioToolbox
 import CoreAudio
+import Darwin
+
+// MARK: - Cross-thread publish/consume fences
+//
+// The pendingCoeffs/pendingFlag handoff (main thread producer → RT thread consumer)
+// and the callbackCounter/maxAbsInput telemetry (RT thread writer → main-actor
+// watchdog reader) both need real release/acquire memory ordering, not just the
+// per-address atomicity a naturally-aligned Int32/Int64 load/store gets for free:
+// without a fence, ARM64's weak multi-copy-atomic model lets the RT thread's core
+// observe the flag flip before it observes the payload writes that (in program
+// order) preceded it, which can hand vDSP a torn/stale mix of coefficients.
+//
+// The obvious fix is Swift 6's `Synchronization.Atomic<T>` (`.storing(_,
+// ordering: .releasing)` / `.load(ordering: .acquiring)`) — but that type is
+// `@available(macOS 15, *)`, and Package.swift pins this project's deployment
+// target at macOS 14.4 (see `platforms:` there and DEPLOYMENT_TARGET in
+// scripts/build-config.sh), so it cannot be used as a stored-property type here
+// without bumping the deployment target (out of scope for this fix).
+//
+// Fallback: `OSMemoryBarrier()` (<libkern/OSAtomic.h>) issues a full hardware
+// memory fence and — because it is an opaque external call the optimizer cannot
+// see through — also acts as a compiler barrier, giving the same happens-before
+// guarantee a real atomic release/acquire pair would, with a single instruction,
+// no allocation, no lock, no blocking (RT-safe per CONTRACT.md). It has been
+// deprecated since macOS 10.12 in favor of <stdatomic.h>'s C11 atomics, but
+// remains present in the SDK; the deprecation warning is expected and accepted
+// here. VERIFY ON FIRST MAC BUILD: once the deployment target moves to macOS 15+,
+// replace `rtReleaseFence`/`rtAcquireFence` call sites with real
+// `Synchronization.Atomic<Int32>` storage instead of plain fields + fences.
+@inline(__always) func rtReleaseFence() { OSMemoryBarrier() }
+@inline(__always) func rtAcquireFence() { OSMemoryBarrier() }
 
 final class EQDeviceRTContext {
 
@@ -50,11 +81,18 @@ final class EQDeviceRTContext {
     /// instead applied FROM the RT thread, in the same callback that runs vDSP_biquadm —
     /// exactly one writer of the setup's target state, never racing the process call.
     ///
-    /// Protocol:
+    /// Protocol (see the `rtReleaseFence`/`rtAcquireFence` doc comment above this class
+    /// for why plain Int32 load/store isn't enough on its own):
     ///   - Main thread writes new coefficients into `pendingCoeffs` only when
-    ///     `pendingFlag == 0`, then sets `pendingFlag = 1` (publish).
-    ///   - IOProc, at callback start, checks `pendingFlag`; if 1, calls SetTargetsDouble
-    ///     from the RT thread, then sets `pendingFlag = 0` (consume).
+    ///     `pendingFlag == 0`, calls `rtReleaseFence()`, THEN sets `pendingFlag = 1`
+    ///     (publish) — the fence guarantees the coefficient writes are visible to any
+    ///     thread that later observes the flag flip.
+    ///   - IOProc, at callback start, checks `pendingFlag`; if 1, calls
+    ///     `rtAcquireFence()` (pairs with the producer's release fence, so the
+    ///     coefficient writes above are guaranteed visible here), then calls
+    ///     SetTargetsDouble from the RT thread, then `rtReleaseFence()` again before
+    ///     setting `pendingFlag = 0` (consume) so the next producer write can't be
+    ///     reordered ahead of this thread's own read.
     ///   - If main finds the flag still 1 (RT hasn't consumed yet — rare), it stashes the
     ///     latest bands and retries on the next coalesce tick.
     /// Buffer capacity is the full pre-allocated 5 * channels * maxSections doubles.
@@ -67,7 +105,12 @@ final class EQDeviceRTContext {
 
     /// Watchdog telemetry. Counter advances every callback; maxAbs is the loudest input
     /// sample seen since the watchdog last reset it (running max, so a brief transient
-    /// between checks isn't masked by a quiet final callback). Read on the main actor.
+    /// between checks isn't masked by a quiet final callback). Written on the RT thread
+    /// (EQIOProcFactory.swift, every callback), read-then-reset on the main actor
+    /// (EQDeviceEngine+Watchdog.swift, every 5 s tick) — both sides bracket their
+    /// access with `rtReleaseFence()`/`rtAcquireFence()` (see the doc comment above
+    /// this class) so the watchdog's read observes the RT thread's latest writes and
+    /// the RT thread observes the watchdog's reset-to-zero in order.
     var callbackCounter: Int64 = 0
     var maxAbsInput: Float = 0
 

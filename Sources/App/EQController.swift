@@ -1,4 +1,5 @@
 import CoreAudio
+import Foundation
 import SwiftUI
 import Combine
 import ServiceManagement
@@ -25,7 +26,7 @@ final class EQController: ObservableObject {
 
     @Published var isEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(isEnabled, forKey: Keys.isEnabled)
+            defaults.set(isEnabled, forKey: Keys.isEnabled)
             coordinator.setGloballyEnabled(isEnabled)
             updateStatus()
         }
@@ -34,7 +35,7 @@ final class EQController: ObservableObject {
     @Published var bands: [EQBand] {
         didSet {
             coordinator.updateBands(bands)
-            persistBands()
+            schedulePersistBands()
         }
     }
 
@@ -44,7 +45,7 @@ final class EQController: ObservableObject {
 
     @Published var gainStagingEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(gainStagingEnabled, forKey: Keys.gainStagingEnabled)
+            defaults.set(gainStagingEnabled, forKey: Keys.gainStagingEnabled)
             coordinator.setGainStagingEnabled(gainStagingEnabled)
         }
     }
@@ -74,16 +75,20 @@ final class EQController: ObservableObject {
 
     // MARK: Private state
 
-    private let coordinator = OutputDeviceEQCoordinator()
+    private let coordinator: OutputDeviceEQCoordinating
+    private let defaults: UserDefaults
     private var lastAggregateStatus = AggregateEngineStatus(anyRunning: false, permissionNeeded: false, errorMessage: nil)
 
     var statusDetail: String {
+        Self.statusDetail(for: status, runningDeviceCount: deviceRows.filter(\.isRunning).count)
+    }
+
+    nonisolated static func statusDetail(for status: DisplayStatus, runningDeviceCount: Int) -> String {
         switch status {
         case .active:
-            let runningCount = deviceRows.filter(\.isRunning).count
-            if runningCount == 0 { return "EQ enabled — no output devices selected" }
-            if runningCount == 1 { return "EQ active on 1 device" }
-            return "EQ active on \(runningCount) devices"
+            if runningDeviceCount == 0 { return "EQ enabled — no output devices selected" }
+            if runningDeviceCount == 1 { return "EQ active on 1 device" }
+            return "EQ active on \(runningDeviceCount) devices"
         case .disabled:         return "EQ is off"
         case .permissionNeeded: return "System Audio Recording permission needed"
         case .error(let msg):   return "Error: \(msg)"
@@ -92,12 +97,15 @@ final class EQController: ObservableObject {
 
     // MARK: Init
 
-    init() {
-        let storedEnabled = UserDefaults.standard.object(forKey: Keys.isEnabled) as? Bool ?? true
-        isEnabled = storedEnabled
-        gainStagingEnabled = UserDefaults.standard.object(forKey: Keys.gainStagingEnabled) as? Bool ?? true
+    init(coordinator: OutputDeviceEQCoordinating = OutputDeviceEQCoordinator(), defaults: UserDefaults = .standard) {
+        self.coordinator = coordinator
+        self.defaults = defaults
 
-        if let data = UserDefaults.standard.data(forKey: Keys.bands),
+        let storedEnabled = defaults.object(forKey: Keys.isEnabled) as? Bool ?? true
+        isEnabled = storedEnabled
+        gainStagingEnabled = defaults.object(forKey: Keys.gainStagingEnabled) as? Bool ?? true
+
+        if let data = defaults.data(forKey: Keys.bands),
            let decoded = try? JSONDecoder().decode([EQBand].self, from: data) {
             bands = decoded
         } else {
@@ -160,9 +168,33 @@ final class EQController: ObservableObject {
 
     // MARK: Persistence helpers
 
+    // Debounces the UserDefaults write: `bands`'s didSet fires at slider-drag rate
+    // (30-60+ times/sec), but unlike coordinator.updateBands(bands) above (which the
+    // engine itself coalesces to ~50 ms, see EQDeviceEngine+LiveUpdate.swift), a
+    // JSONEncoder().encode + UserDefaults.set on every intermediate drag value is pure
+    // waste — only the value at rest needs to hit disk. Cancel-and-reschedule on every
+    // new didSet so a whole drag gesture collapses into one write, shortly after the
+    // user stops moving the slider.
+    //
+    // Residual risk (documented, not fixed here): if the app is killed within this
+    // window after the last change, that change is lost. eqYourMacbookApp.swift has no
+    // NSApplicationDelegateAdaptor / applicationWillTerminate hook to flush on quit, and
+    // adding one is app-lifecycle infrastructure beyond this fix's scope.
+    private static let persistBandsDebounceInterval: TimeInterval = 0.4
+    private var persistBandsWorkItem: DispatchWorkItem?
+
+    private func schedulePersistBands() {
+        persistBandsWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.persistBands()
+        }
+        persistBandsWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.persistBandsDebounceInterval, execute: workItem)
+    }
+
     private func persistBands() {
         if let data = try? JSONEncoder().encode(bands) {
-            UserDefaults.standard.set(data, forKey: Keys.bands)
+            defaults.set(data, forKey: Keys.bands)
         }
     }
 

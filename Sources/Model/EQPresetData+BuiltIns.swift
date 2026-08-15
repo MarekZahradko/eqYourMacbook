@@ -37,10 +37,11 @@ extension EQPresetData {
     static func suggestFrequency(for bands: [EQBand]) -> Float {
         guard !bands.isEmpty else { return 1000 }
         let sorted = bands.map(\.frequency).sorted()
+        let range = EQBand.frequencyRange
 
         // Check gap below lowest
         var bestFreq: Float = sorted[0] / 2
-        var bestGap: Float = log2(sorted[0] / 20) // gap from 20 Hz
+        var bestGap: Float = log2(sorted[0] / range.lowerBound) // gap from range floor
 
         // Check gaps between bands
         for i in 1..<sorted.count {
@@ -52,11 +53,11 @@ extension EQPresetData {
         }
 
         // Check gap above highest
-        let topGap = log2(20000 / sorted.last!)
+        let topGap = log2(range.upperBound / sorted.last!)
         if topGap > bestGap {
             bestFreq = sorted.last! * 2
         }
 
-        return min(max(bestFreq, 20), 20000)
+        return bestFreq.clamped(to: range)
     }
 }

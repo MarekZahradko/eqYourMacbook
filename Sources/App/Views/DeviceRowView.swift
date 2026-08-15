@@ -2,13 +2,14 @@ import SwiftUI
 
 // MARK: - DeviceRowView
 
+@MainActor
 struct DeviceRowView: View {
     let row: DeviceRowViewModel
     let onToggle: (Bool) -> Void
 
     var body: some View {
         HStack {
-            Toggle(isOn: Binding(get: { row.isChecked }, set: onToggle)) {
+            Toggle(isOn: Binding(get: { row.isChecked }, set: { onToggle($0) })) {
                 Text(row.name)
             }
             .toggleStyle(.checkbox)

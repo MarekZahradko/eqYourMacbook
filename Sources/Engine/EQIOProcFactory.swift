@@ -12,17 +12,26 @@ func makeIOBlock(context: EQDeviceRTContext) -> AudioDeviceIOBlock {
         let outList = UnsafeMutableAudioBufferListPointer(outOutputData)
 
         // Consume pending coefficients here (RT thread, same thread as vDSP_biquadm) so
-        // there's no race with the main-thread writer.
-        if context.pendingFlag != 0, let setup = context.biquadSetup, let pending = context.pendingCoeffs {
-            vDSP_biquadm_SetTargetsDouble(setup,
-                                          pending,
-                                          0.005,                              // interp rate (per-sample step toward target)
-                                          0.0001,                             // interp threshold (|Δ| considered "reached")
-                                          0,                                  // start_sec
-                                          0,                                  // start_chn
-                                          vDSP_Length(context.maxSections),   // nsec
-                                          vDSP_Length(context.channelCount))  // nchn
-            context.pendingFlag = 0   // publish consumption so main may write the next update
+        // there's no race with the main-thread writer. rtAcquireFence() pairs with the
+        // producer's rtReleaseFence() (EQDeviceEngine+LiveUpdate.swift's
+        // flushPendingUpdate) — without it, ARM64 could observe this flag flip before
+        // observing the pendingCoeffs writes that preceded it in program order, handing
+        // vDSP a torn/stale mix of coefficients. See EQDeviceRTContext.swift's
+        // rtReleaseFence/rtAcquireFence doc comment for the full rationale.
+        if context.pendingFlag != 0 {
+            rtAcquireFence()
+            if let setup = context.biquadSetup, let pending = context.pendingCoeffs {
+                vDSP_biquadm_SetTargetsDouble(setup,
+                                              pending,
+                                              0.005,                              // interp rate (per-sample step toward target)
+                                              0.0001,                             // interp threshold (|Δ| considered "reached")
+                                              0,                                  // start_sec
+                                              0,                                  // start_chn
+                                              vDSP_Length(context.maxSections),   // nsec
+                                              vDSP_Length(context.channelCount))  // nchn
+                rtReleaseFence()          // publish consumption in order, before...
+                context.pendingFlag = 0   // ...the flag flip main is watching for
+            }
         }
 
         // No output buffers → nothing to render into. Never alias input as output
@@ -82,6 +91,10 @@ func makeIOBlock(context: EQDeviceRTContext) -> AudioDeviceIOBlock {
         }
         if maxAbs > context.maxAbsInput { context.maxAbsInput = maxAbs }
         context.callbackCounter = context.callbackCounter &+ 1
+        // Publish both telemetry writes above so the main-actor watchdog (which
+        // brackets its read with rtAcquireFence(), EQDeviceEngine+Watchdog.swift)
+        // observes them in order rather than relying on plain-field visibility.
+        rtReleaseFence()
 
         // Build channel pointer arrays for input and output (pre-allocated scratch).
         guard let inPtrs = context.inputPtrs, let outPtrs = context.outputPtrs else {

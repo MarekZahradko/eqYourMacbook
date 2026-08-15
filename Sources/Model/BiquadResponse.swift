@@ -94,8 +94,7 @@ enum BiquadResponse {
         // clamping here keeps A pinned to unity so a stray nonzero gain can't leak into
         // the peaking-only A-scaling below (bandPass/notch/lowPass/highPass don't use A
         // in their own coefficient math, but this keeps the invariant explicit).
-        let gainless: Set<FilterType> = [.bandPass, .notch, .lowPass, .highPass]
-        let gain = gainless.contains(band.filterType) ? 0.0 : Double(band.gain)
+        let gain = FilterType.gainless.contains(band.filterType) ? 0.0 : Double(band.gain)
         let bw = Double(max(band.bandwidth, 0.05))
 
         let w0 = 2.0 * .pi * f0 / sampleRate

@@ -53,7 +53,7 @@ struct OutputDeviceInfo: Identifiable, Equatable {
 
     private func handleDevicesChanged() {
         let new = Self.enumerate()
-        guard new != devices else { return }   // fire only on actual changes
+        guard Self.shouldPublishDeviceListChange(from: devices, to: new) else { return }
         devices = new
         onDevicesChanged?(new)
     }
@@ -105,5 +105,16 @@ extension OutputDeviceCatalog {
             }
         }
         return builtIn + others
+    }
+
+    /// Pure: dedup decision for `handleDevicesChanged` — fire `onDevicesChanged` only
+    /// when the newly enumerated list actually differs from what was last published.
+    /// Extracted so the diff/dedup policy (as opposed to the live
+    /// AudioObjectPropertyListenerBlock wiring around it) is testable without CoreAudio,
+    /// matching how `filterAndSort` was already pulled out of `enumerate()`.
+    nonisolated static func shouldPublishDeviceListChange(
+        from oldDevices: [OutputDeviceInfo], to newDevices: [OutputDeviceInfo]
+    ) -> Bool {
+        oldDevices != newDevices
     }
 }

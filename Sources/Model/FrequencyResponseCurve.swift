@@ -3,11 +3,14 @@
 import Foundation
 
 extension BiquadResponse {
-    /// Generate log-spaced frequencies from 20 Hz to 20 kHz.
+    /// Generate log-spaced frequencies across EQBand.frequencyRange (20 Hz–20 kHz).
     static func logFrequencies(count: Int = 512) -> [Double] {
-        (0..<count).map { i in
+        let minFreq = Double(EQBand.frequencyRange.lowerBound)
+        let maxFreq = Double(EQBand.frequencyRange.upperBound)
+        let ratio = maxFreq / minFreq
+        return (0..<count).map { i in
             let t = Double(i) / Double(count - 1)
-            return 20.0 * pow(1000.0, t)
+            return minFreq * pow(ratio, t)
         }
     }
 

@@ -48,4 +48,51 @@ import Testing
         let result = OutputDeviceCatalog.filterAndSort([usb, bt, hdmi])
         #expect(result.map(\.id) == [1, 2, 3])
     }
+
+    // MARK: - shouldPublishDeviceListChange (handleDevicesChanged's dedup policy,
+    // extracted to be testable without CoreAudio — see OutputDeviceCatalog.swift)
+
+    private func device(_ id: AudioObjectID, _ uid: String, name: String = "Device",
+                        isBuiltIn: Bool = false) -> OutputDeviceInfo {
+        OutputDeviceInfo(id: id, uid: uid, name: name, isBuiltIn: isBuiltIn)
+    }
+
+    @Test func identicalDeviceListsDoNotPublishAChange() {
+        let list = [device(1, "a"), device(2, "b")]
+        #expect(!OutputDeviceCatalog.shouldPublishDeviceListChange(from: list, to: list))
+    }
+
+    @Test func bothEmptyListsDoNotPublishAChange() {
+        #expect(!OutputDeviceCatalog.shouldPublishDeviceListChange(from: [], to: []))
+    }
+
+    @Test func anAddedDevicePublishesAChange() {
+        let old = [device(1, "a")]
+        let new = [device(1, "a"), device(2, "b")]
+        #expect(OutputDeviceCatalog.shouldPublishDeviceListChange(from: old, to: new))
+    }
+
+    @Test func aRemovedDevicePublishesAChange() {
+        let old = [device(1, "a"), device(2, "b")]
+        let new = [device(1, "a")]
+        #expect(OutputDeviceCatalog.shouldPublishDeviceListChange(from: old, to: new))
+    }
+
+    /// Same devices, same content, but reordered: OutputDeviceInfo array equality is
+    /// order-sensitive, so this counts as a change (matters here since filterAndSort's
+    /// built-in-first ordering is meaningful UI ordering, not an incidental artifact).
+    @Test func sameDevicesReorderedPublishesAChange() {
+        let old = [device(1, "a"), device(2, "b")]
+        let new = [device(2, "b"), device(1, "a")]
+        #expect(OutputDeviceCatalog.shouldPublishDeviceListChange(from: old, to: new))
+    }
+
+    /// A field-level change (e.g. a Bluetooth device's user-visible name changing)
+    /// on an otherwise-identical device list still counts as a change, since
+    /// OutputDeviceInfo's synthesized Equatable compares every field.
+    @Test func sameIDsDifferentNamePublishesAChange() {
+        let old = [device(1, "a", name: "Old Name")]
+        let new = [device(1, "a", name: "New Name")]
+        #expect(OutputDeviceCatalog.shouldPublishDeviceListChange(from: old, to: new))
+    }
 }

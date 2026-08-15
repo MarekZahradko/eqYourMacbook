@@ -6,17 +6,18 @@ struct BandRowView: View {
     @Binding var band: EQBand
     let onDelete: () -> Void
 
-    /// Log-scale slider position (0...1) ↔ frequency 20–20000 Hz
+    /// Log-scale slider bounds, derived from EQBand.frequencyRange (the canonical range).
+    private var logFreqMin: Double { log10(Double(EQBand.frequencyRange.lowerBound)) }
+    private var logFreqMax: Double { log10(Double(EQBand.frequencyRange.upperBound)) }
+
+    /// Log-scale slider position (0...1) ↔ EQBand.frequencyRange
     private var logSliderValue: Double {
-        get { (log10(Double(band.frequency)) - log10(20.0)) / (log10(20000.0) - log10(20.0)) }
+        get { (log10(Double(band.frequency)) - logFreqMin) / (logFreqMax - logFreqMin) }
     }
 
     /// Gain is not meaningful for pass/notch filter types.
     private var gainDisabled: Bool {
-        switch band.filterType {
-        case .lowPass, .highPass, .bandPass, .notch: return true
-        default: return false
-        }
+        FilterType.gainless.contains(band.filterType)
     }
 
     var body: some View {
@@ -24,20 +25,17 @@ struct BandRowView: View {
             HStack(spacing: 6) {
                 Picker("", selection: $band.filterType) {
                     ForEach(FilterType.allCases, id: \.self) { ft in
-                        Text(ft.shortLabel).tag(ft)
+                        Text(ft.displayName).tag(ft)
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 80)
+                .frame(width: 92)
                 .labelsHidden()
                 .onChange(of: band.filterType) { _, newType in
-                    switch newType {
-                    case .lowPass, .highPass, .bandPass, .notch:
+                    if FilterType.gainless.contains(newType) {
                         // Reset to Butterworth-ish slope; gain is meaningless here.
                         band.bandwidth = EQBand.qToOctaves(0.707)
                         band.gain = 0
-                    case .parametric, .lowShelf, .highShelf:
-                        break
                     }
                 }
 
@@ -45,7 +43,7 @@ struct BandRowView: View {
                     value: Binding(
                         get: { logSliderValue },
                         set: { v in
-                            let freq = pow(10.0, v * (log10(20000.0) - log10(20.0)) + log10(20.0))
+                            let freq = pow(10.0, v * (logFreqMax - logFreqMin) + logFreqMin)
                             band.frequency = Float(freq.rounded())
                         }
                     ),
@@ -84,8 +82,13 @@ struct BandRowView: View {
                     .frame(width: 48, alignment: .trailing)
 
                 Stepper(
+                    // Range matches EQBand.bandwidthRange (0.05...4.0) exactly, so the
+                    // stepper can't drift from the model's enforced invariant. Step stays
+                    // 0.1 despite the 0.05 floor: SwiftUI clamps the final decrement to the
+                    // lower bound (0.1 → 0.05) rather than under/overshooting, so the floor
+                    // remains reachable even though it isn't a multiple of the step.
                     value: $band.bandwidth,
-                    in: Float(0.1)...Float(4.0),
+                    in: EQBand.bandwidthRange,
                     step: Float(0.1)
                 ) {
                     Text(band.bandwidthLabel(asQ: false))
@@ -95,21 +98,5 @@ struct BandRowView: View {
             }
         }
         .padding(.vertical, 3)
-    }
-}
-
-// MARK: - FilterType short labels (view-layer only)
-
-private extension FilterType {
-    var shortLabel: String {
-        switch self {
-        case .parametric: return "Bell"
-        case .lowShelf:   return "Lo S"
-        case .highShelf:  return "Hi S"
-        case .lowPass:    return "LP"
-        case .highPass:   return "HP"
-        case .bandPass:   return "BP"
-        case .notch:      return "Notch"
-        }
     }
 }

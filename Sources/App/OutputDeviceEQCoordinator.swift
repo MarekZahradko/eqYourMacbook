@@ -22,7 +22,21 @@ struct AggregateEngineStatus: Equatable {
     var errorMessage: String?
 }
 
-@MainActor final class OutputDeviceEQCoordinator {
+/// Seam so EQController can be tested with a fake instead of a live coordinator
+/// (which would otherwise register a real CoreAudio device listener and start taps).
+@MainActor protocol OutputDeviceEQCoordinating: AnyObject {
+    var onAggregateStatusChanged: ((AggregateEngineStatus) -> Void)? { get set }
+    var onDeviceRowsChanged: (([DeviceRowViewModel]) -> Void)? { get set }
+
+    func start()
+    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID)
+    func setGloballyEnabled(_ enabled: Bool)
+    func updateBands(_ bands: [EQBand])
+    func updateBypass(_ bypassed: Bool)
+    func setGainStagingEnabled(_ enabled: Bool)
+}
+
+@MainActor final class OutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
 
     // The coordinator conforms to EQDeviceEngineDelegate and is the delegate for every
     // EQDeviceEngine it creates, keyed by each engine's own deviceID. It collapses all
@@ -44,6 +58,18 @@ struct AggregateEngineStatus: Equatable {
     private var currentBands: [EQBand] = []
     private var currentBypass = false
     private var currentGainStagingEnabled = true
+
+    // Memoizes anyOtherProcessOutputtingAudio(excluding:) across every engine's watchdog
+    // tick (each EQDeviceEngine runs its own independent 5 s DispatchSourceTimer on
+    // .main, so ticks aren't synchronized). Every engine would ask this with the same
+    // ownProcessObjectID and get the identical CoreAudio answer, so re-enumerating the
+    // system process list + re-querying kAudioProcessPropertyIsRunningOutput once per
+    // engine per tick is pure waste. TTL is short (1 s) so it doesn't blur the watchdog's
+    // own 5 s-period / 2-consecutive-check detection latency — it only dedupes calls
+    // that land within the same ~1 s window, which real per-engine timer jitter can do.
+    private static let othersOutputtingCacheTTL: TimeInterval = 1.0
+    private var cachedOthersOutputting: Bool?
+    private var othersOutputtingCachedAt: Date?
 
     // Soft cap on simultaneously enabled devices: N concurrent aggregate+tap+IOProc
     // sets is unverified on real hardware. Keeps a mistaken "enable everything" click
@@ -202,13 +228,14 @@ extension OutputDeviceEQCoordinator {
         globallyEnabled: Bool,
         maxSimultaneous: Int
     ) -> (toStop: [AudioObjectID], toStart: [AudioObjectID]) {
-        let catalogIDs = Set(catalogDevices.map(\.id))
+        // Keyed by id so a reused AudioObjectID with a different UID counts as "gone", not "still present".
+        let catalogUIDByID = Dictionary(uniqueKeysWithValues: catalogDevices.map { ($0.id, $0.uid) })
 
         var toStop: [AudioObjectID] = []
         for id in runningDeviceIDs {
             let uid = runningDeviceUIDs[id]
             let stillWanted = globallyEnabled && (uid.map(enabledUIDs.contains) ?? false)
-            let stillPresent = catalogIDs.contains(id)
+            let stillPresent = catalogUIDByID[id] != nil && catalogUIDByID[id] == uid
             if !stillPresent || !stillWanted {
                 toStop.append(id)
             }
@@ -235,7 +262,8 @@ extension OutputDeviceEQCoordinator {
         permissionSuspectedDevices: Set<AudioObjectID>
     ) -> AggregateEngineStatus {
         let anyRunning = engineStates.values.contains { if case .running = $0 { return true }; return false }
-        let errorMessage = engineStates.values.compactMap { state -> String? in
+        // Sorted by deviceID for a deterministic pick when multiple devices fail at once.
+        let errorMessage = engineStates.sorted { $0.key < $1.key }.compactMap { _, state -> String? in
             if case .failed(let message) = state { return message }
             return nil
         }.first
@@ -259,5 +287,26 @@ extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
     func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine) {
         permissionSuspectedDevices.insert(engine.deviceID)
         publishAggregateStatus()
+    }
+
+    // Shared TTL-cached helper (CLAUDE.md audit fix): computes the real answer once per
+    // ~1 s window and reuses it for every engine that asks within that window, instead
+    // of each of the (up to maxSimultaneousDevices) engines independently re-querying
+    // CoreAudio on its own 5 s timer. Recomputes on a cache miss/expiry; never changes
+    // the watchdog's detection semantics, only avoids redundant round-trips.
+    func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool {
+        let now = Date()
+        if let cachedOthersOutputting, let othersOutputtingCachedAt,
+           now.timeIntervalSince(othersOutputtingCachedAt) < Self.othersOutputtingCacheTTL {
+            return cachedOthersOutputting
+        }
+        // Module-qualified: the protocol requirement below has the same base name as
+        // the free function in CoreAudioHelpers.swift, and an unqualified call here
+        // would resolve to `self` (infinite recursion) since member lookup shadows
+        // top-level functions of the same name.
+        let result = eqYourMacbook.anyOtherProcessOutputtingAudio(excluding: processObjectID)
+        cachedOthersOutputting = result
+        othersOutputtingCachedAt = now
+        return result
     }
 }

@@ -7,7 +7,13 @@ import Testing
 /// CANARY: it empirically pins how vDSP interprets the 5 coefficients per section.
 /// If Apple's convention ever differs from what we assume, this is the test that
 /// catches it on the first Mac run.
-@Suite struct EngineCoefficientTests {
+///
+/// `.serialized`: defense-in-depth. `EQCoefficients`'s static memoization cache is
+/// now properly lock-guarded (see EQCoefficients.swift), so parallel `@Test`
+/// execution should no longer race on it — but test correctness matters more than
+/// test-parallelism speed for a shared static this close to the RT path, so this
+/// suite stays serialized regardless.
+@Suite(.serialized) struct EngineCoefficientTests {
 
     private let sampleRate = 48_000.0
 
@@ -260,6 +266,291 @@ import Testing
                 && coeffs[s * 5 + 2] == 0 && coeffs[s * 5 + 3] == 0 && coeffs[s * 5 + 4] == 0
             #expect(!isIdentity, "section \(s) should be an active band, not identity")
         }
+    }
+
+    // MARK: - bandPass: RBJ "constant 0 dB peak gain" BPF — peaks exactly at f0
+    //
+    // Substituting z0 = e^{jw0} into H(z) = (alpha - alpha·z^-2) / ((1+alpha) - 2cos(w0)z^-1
+    // + (1-alpha)z^-2) and using z0 - z0^-1 = 2j·sin(w0), z0 + z0^-1 = 2cos(w0), both
+    // numerator and denominator reduce to z0^-1·2j·alpha·sin(w0) — they CANCEL exactly,
+    // giving H(z0) = 1 (0 dB) for ANY alpha/Q. This is an exact algebraic identity, not
+    // an approximation. alpha is derived from octave bandwidth via the SAME RBJ
+    // "alpha from BW" formula shared with peaking (see BiquadResponse's alpha comment)
+    // — the RBJ cookbook defines this formula so the half-power (-3.0103 dB) points land
+    // exactly at the requested octave bandwidth's edges for BPF/notch.
+    @Test func bandPassPeaksAtF0AndFallsOffSymmetrically() {
+        let band = EQBand(frequency: 1000, gain: 0, bandwidth: 1.0, filterType: .bandPass)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        let fLow = 1000.0 / pow(2.0, 0.5)   // ≈ 707.11 Hz
+        let fHigh = 1000.0 * pow(2.0, 0.5)  // ≈ 1414.21 Hz
+
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 0.0) <= 0.05)
+        // Half-power points: 10*log10(0.5) ≈ -3.0103 dB.
+        #expect(abs(coeffs.gainDB(at: fLow, sampleRate: sampleRate) - (-3.0103)) <= 0.1)
+        #expect(abs(coeffs.gainDB(at: fHigh, sampleRate: sampleRate) - (-3.0103)) <= 0.1)
+        // Symmetric falloff in log-frequency: both edges land at (nearly) the same gain.
+        #expect(abs(coeffs.gainDB(at: fLow, sampleRate: sampleRate)
+                    - coeffs.gainDB(at: fHigh, sampleRate: sampleRate)) <= 0.05)
+        // Well away from f0 the band-pass keeps rolling off.
+        #expect(coeffs.gainDB(at: 100, sampleRate: sampleRate) < -15.0)
+        #expect(coeffs.gainDB(at: 10000, sampleRate: sampleRate) < -15.0)
+    }
+
+    // MARK: - notch: exact null at f0, exact unity at DC and Nyquist
+    //
+    // Substituting z0=e^{jw0}: Num(z0) = 1 - 2cos(w0)z0^-1 + z0^-2 = z0^-1[(z0+z0^-1) -
+    // 2cos(w0)] = z0^-1[2cos(w0) - 2cos(w0)] = 0 EXACTLY — an exact null at f0 for any
+    // alpha/Q. At DC (z=1): Num(1) = 2-2cos(w0), Den(1) = (1+alpha)-2cos(w0)+(1-alpha) =
+    // 2-2cos(w0) — IDENTICAL to Num(1), so |H(0)| = 1 (0 dB) exactly. Same algebra at
+    // Nyquist (z=-1): Num(-1) = Den(-1) = 2+2cos(w0) → 0 dB exactly. So the notch is
+    // exactly flat (0 dB) at DC/Nyquist and has an exact null at f0; nearby frequencies
+    // (well away from f0) should already be very close back to 0 dB.
+    @Test func notchHasDeepNullAtF0AndApproachesZeroAway() {
+        let band = EQBand(frequency: 1000, gain: 0, bandwidth: 1.0, filterType: .notch)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        #expect(coeffs.gainDB(at: 1000, sampleRate: sampleRate) < -60.0,
+                "exact null at f0 expected (Num(z0)=0 by algebra)")
+        #expect(abs(coeffs.gainDB(at: 20, sampleRate: sampleRate) - 0.0) <= 0.05)
+        #expect(abs(coeffs.gainDB(at: 20000, sampleRate: sampleRate) - 0.0) <= 0.05)
+    }
+
+    // MARK: - Nyquist-safe clamp: f0 = min(frequency, sampleRate*0.49)
+    //
+    // At a low sample rate the clamp actually engages (EQBand's own frequencyRange tops
+    // out at 20000, which can legitimately exceed sampleRate*0.49 when sampleRate < ~40800).
+    // At fs=32000, sampleRate*0.49 = 15680 — below EQBand's max of 20000 — so a band
+    // requesting 20000 Hz must be clamped internally to 15680 before any trig/pole math
+    // runs. If BiquadResponse's `min(frequency, sampleRate*0.49)` clamp were removed, a
+    // band at 20000 Hz would compute w0 = 2π·20000/32000 = 1.25π > π (past Nyquist,
+    // aliased) and produce DIFFERENT coefficients than a band built directly at 15680 Hz.
+    // (bw=0.05, not the 1.0 default, to stay out of the extreme-sinh blowup regime that
+    // the BW→Q formula hits within a couple percent of true Nyquist — see the
+    // bandwidth-extreme tests below for why bw magnifies that sensitivity.)
+    @Test func nyquistClampMatchesExplicitlyClampedFrequency() {
+        let lowSampleRate = 32_000.0
+        let clampedFreq = Float(lowSampleRate * 0.49)   // 15680, exactly representable in Float
+        let aboveClamp = EQBand(frequency: 20000, gain: 6, bandwidth: 0.05, filterType: .parametric)
+        let atClamp = EQBand(frequency: clampedFreq, gain: 6, bandwidth: 0.05, filterType: .parametric)
+
+        let coeffsAbove = BiquadResponse.coefficients(for: aboveClamp, sampleRate: lowSampleRate)
+        let coeffsAtClamp = BiquadResponse.coefficients(for: atClamp, sampleRate: lowSampleRate)
+
+        #expect(abs(coeffsAbove.b0 - coeffsAtClamp.b0) <= 1e-6)
+        #expect(abs(coeffsAbove.b1 - coeffsAtClamp.b1) <= 1e-6)
+        #expect(abs(coeffsAbove.b2 - coeffsAtClamp.b2) <= 1e-6)
+        #expect(abs(coeffsAbove.a0 - coeffsAtClamp.a0) <= 1e-6)
+        #expect(abs(coeffsAbove.a1 - coeffsAtClamp.a1) <= 1e-6)
+        #expect(abs(coeffsAbove.a2 - coeffsAtClamp.a2) <= 1e-6)
+
+        // The clamp must also prevent a blow-up (a real risk right at w0 → π): every
+        // term stays finite.
+        for c in [coeffsAbove.b0, coeffsAbove.b1, coeffsAbove.b2,
+                  coeffsAbove.a0, coeffsAbove.a1, coeffsAbove.a2] {
+            #expect(c.isFinite)
+        }
+    }
+
+    // MARK: - Bandwidth-range extremes (EQBand.bandwidthRange: 0.05...4.0 octaves)
+    //
+    // Hand-derived via BiquadResponse's own formulas (Python cross-check, IEEE-754
+    // double, values reproduced to 7 significant figures):
+    //   w0 = 2π·1000/48000 = 0.1308996938995747 rad
+    //   cos(w0) = 0.9914448613738104, sin(w0) = 0.13052619222005157
+    //   A = 10^(12/40) = 1.9952623149688795
+    // bw=0.05: Q = 1/(2·sinh(ln2/2·0.05·w0/sin(w0))) ≈ 28.7701226
+    //          alpha = sin(w0)/(2Q) ≈ 0.0022684330
+    // bw=4.0:  Q ≈ 0.2654710671, alpha ≈ 0.2458388284
+    // b0=1+alpha·A, b2=1-alpha·A, a0=1+alpha/A, a2=1-alpha/A, b1=a1=-2cos(w0) (bw-independent).
+    //
+    // Peak gain at f0 is exactly the nominal dB gain independent of alpha/Q: substituting
+    // z0=e^{jw0}, the same cancellation algebra as the bandPass/notch derivations above
+    // gives H(z0) = (alpha·A)/(alpha/A) = A², so gainDB(f0) = 20·log10(A²) = gain exactly.
+    @Test func parametricNarrowestBandwidthIsFiniteAndMatchesHandDerivation() {
+        let band = EQBand(frequency: 1000, gain: 12, bandwidth: 0.05, filterType: .parametric)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        #expect(abs(coeffs.b0 - 1.0045261189) <= 1e-6)
+        #expect(abs(coeffs.b1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.b2 - 0.9954738811) <= 1e-6)
+        #expect(abs(coeffs.a0 - 1.0011369097) <= 1e-6)
+        #expect(abs(coeffs.a1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.a2 - 0.9988630903) <= 1e-6)
+        for c in [coeffs.b0, coeffs.b1, coeffs.b2, coeffs.a0, coeffs.a1, coeffs.a2] {
+            #expect(c.isFinite)
+        }
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 12.0) <= 0.1)
+    }
+
+    @Test func parametricWidestBandwidthIsFiniteAndMatchesHandDerivation() {
+        let band = EQBand(frequency: 1000, gain: 12, bandwidth: 4.0, filterType: .parametric)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        #expect(abs(coeffs.b0 - 1.4905129498) <= 1e-6)
+        #expect(abs(coeffs.b1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.b2 - 0.5094870502) <= 1e-6)
+        #expect(abs(coeffs.a0 - 1.1232112823) <= 1e-6)
+        #expect(abs(coeffs.a1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.a2 - 0.8767887177) <= 1e-6)
+        for c in [coeffs.b0, coeffs.b1, coeffs.b2, coeffs.a0, coeffs.a1, coeffs.a2] {
+            #expect(c.isFinite)
+        }
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 12.0) <= 0.1)
+    }
+
+    // Vicanek matched shelf: the DC and Nyquist anchors are preserved EXACTLY at any
+    // bandwidth (algebraically, B(1) = sqrt(v1) and B(-1) = sqrt(gainDCSq·dDC) fall out
+    // of the b0+b1+b2/b0-b1+b2 sums, which never depend on how the disc2 floor below
+    // splits (b0+b2) into b0 vs b2 individually) — confirmed at 20 Hz (DC-adjacent) and
+    // 20000 Hz (Nyquist-adjacent, within the existing test's 0.3 dB tolerance since a
+    // narrow bw=0.05 shelf's transition has already settled well before 20 kHz).
+    //
+    // The CORNER anchor (|H(w0)|²=A² exactly), however, does NOT survive at this
+    // extreme: b0/b2's individual split solves `disc2 = u² - 4·(p2/16)`, and at
+    // bw=0.05/f0=8000/gain=-4 this is analytically negative (≈ -0.1013, verified via an
+    // independent re-derivation of BiquadResponse's own formulas), so the `max(...,
+    // 0.0)` floor engages and the corner value is NOT the naively-expected -2 dB — it's
+    // ≈ +18.895 dB (hand-derived below; NOT a test bug, a genuine, previously-untested
+    // numerical property of this DSP design at the narrow-bandwidth extreme).
+    @Test func highShelfNarrowestBandwidthAnchorsPartiallyHoldAndAreFinite() {
+        let band = EQBand(frequency: 8000, gain: -4, bandwidth: 0.05, filterType: .highShelf)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        for c in [coeffs.b0, coeffs.b1, coeffs.b2, coeffs.a0, coeffs.a1, coeffs.a2] {
+            #expect(c.isFinite)
+        }
+        // DC-adjacent: exact anchor (0 dB, highShelf's DC plateau) survives.
+        #expect(abs(coeffs.gainDB(at: 20, sampleRate: sampleRate) - 0.0) <= 0.01)
+        // Nyquist-adjacent: exact anchor (-4 dB) survives, same tolerance as the base test.
+        #expect(abs(coeffs.gainDB(at: 20000, sampleRate: sampleRate) - (-4.0)) <= 0.3)
+        // Corner: the disc2 floor breaks the naive -2 dB anchor here — this IS the
+        // correct value for this design at this extreme, not a loosened assertion.
+        #expect(abs(coeffs.gainDB(at: 8000, sampleRate: sampleRate) - 18.895) <= 0.01)
+    }
+
+    // At the WIDE extreme the corner anchor survives exactly (disc2 stays positive
+    // here), but the wide transition band means 20 kHz — under 1.3 octaves from f0 —
+    // hasn't yet settled onto the Nyquist plateau, so that check needs a looser,
+    // hand-verified tolerance instead of the base test's tight one.
+    @Test func highShelfWidestBandwidthCornerAnchorHoldsAndIsFinite() {
+        let band = EQBand(frequency: 8000, gain: -4, bandwidth: 4.0, filterType: .highShelf)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        for c in [coeffs.b0, coeffs.b1, coeffs.b2, coeffs.a0, coeffs.a1, coeffs.a2] {
+            #expect(c.isFinite)
+        }
+        #expect(abs(coeffs.gainDB(at: 20, sampleRate: sampleRate) - 0.0) <= 0.01)
+        #expect(abs(coeffs.gainDB(at: 8000, sampleRate: sampleRate) - (-2.0)) <= 0.05)
+        // Not yet settled to the true -4 dB Nyquist plateau at 20 kHz (hand-verified
+        // ≈ -3.1645 dB) — a wide/low-Q shelf's transition band is broad, so this is
+        // expected, not a bug.
+        #expect(abs(coeffs.gainDB(at: 20000, sampleRate: sampleRate) - (-3.1645)) <= 0.01)
+    }
+
+    // MARK: - Extreme gain values (EQBand.gainRange: -24...+24 dB)
+    //
+    // alpha at f0=1000/bw=1.0/fs=48000 ≈ 0.0462852986 (gain-independent — same value the
+    // existing peakingNonzeroGainBandwidthEdgeIsHalfGain test implicitly relies on).
+    // +24 dB: A = 10^(24/40) = 10^0.6 ≈ 3.9810717055
+    // -24 dB: A = 10^(-24/40) = 10^-0.6 ≈ 0.2511886432 (= 1/3.9810717055 exactly)
+    @Test func parametricMaxPositiveGainBoundary() {
+        let band = EQBand(frequency: 1000, gain: 24, bandwidth: 1.0, filterType: .parametric)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        #expect(abs(coeffs.b0 - 1.1842650925) <= 1e-6)
+        #expect(abs(coeffs.b1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.b2 - 0.8157349075) <= 1e-6)
+        #expect(abs(coeffs.a0 - 1.0116263413) <= 1e-6)
+        #expect(abs(coeffs.a1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.a2 - 0.9883736587) <= 1e-6)
+        // Peak at f0 equals the nominal gain exactly (see bandwidth-extreme tests above
+        // for the H(z0)=A² derivation, which holds for any A).
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - 24.0) <= 0.1)
+    }
+
+    @Test func parametricMaxNegativeGainBoundary() {
+        // Same alpha as the +24 dB case; A and 1/A swap roles, so b0/b2 and a0/a2 swap
+        // relative to the +24 dB case above.
+        let band = EQBand(frequency: 1000, gain: -24, bandwidth: 1.0, filterType: .parametric)
+        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+
+        #expect(abs(coeffs.b0 - 1.0116263413) <= 1e-6)
+        #expect(abs(coeffs.b1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.b2 - 0.9883736587) <= 1e-6)
+        #expect(abs(coeffs.a0 - 1.1842650925) <= 1e-6)
+        #expect(abs(coeffs.a1 - (-1.9828897227)) <= 1e-6)
+        #expect(abs(coeffs.a2 - 0.8157349075) <= 1e-6)
+        #expect(abs(coeffs.gainDB(at: 1000, sampleRate: sampleRate) - (-24.0)) <= 0.1)
+    }
+
+    // MARK: - EQCoefficients.masterGainDB: gain-staging compensation policy
+    @Test func masterGainDBDisabledIsAlwaysZeroRegardlessOfBands() {
+        let bands = [EQBand(frequency: 1000, gain: 12), EQBand(frequency: 2000, gain: -6)]
+        #expect(EQCoefficients.masterGainDB(for: bands, enabled: false) == 0)
+    }
+
+    @Test func masterGainDBAllNonPositiveGainsIsZero() {
+        let bands = [EQBand(frequency: 1000, gain: -6), EQBand(frequency: 2000, gain: 0)]
+        #expect(EQCoefficients.masterGainDB(for: bands, enabled: true) == 0)
+    }
+
+    @Test func masterGainDBMixedGainsReturnsNegativeOfMaxPositive() {
+        let bands = [
+            EQBand(frequency: 1000, gain: 9),
+            EQBand(frequency: 2000, gain: -6),
+            EQBand(frequency: 500, gain: 3),
+        ]
+        #expect(EQCoefficients.masterGainDB(for: bands, enabled: true) == -9)
+    }
+
+    @Test func masterGainDBExcludesMutedBandsFromMax() {
+        var loud = EQBand(frequency: 1000, gain: 20)
+        loud.muted = true
+        let bands = [loud, EQBand(frequency: 2000, gain: 5)]
+        // The +20 dB band is muted, so it must NOT count toward the max — the answer
+        // is driven by the +5 dB band instead of -20.
+        #expect(EQCoefficients.masterGainDB(for: bands, enabled: true) == -5)
+    }
+
+    // MARK: - sectionCoefficients: master-gain folding into section 0's numerator
+    //
+    // masterGainDB is folded as a LINEAR scale (10^(dB/20)) applied only to section 0's
+    // b0/b1/b2 (a1/a2 untouched) — series cascade means scaling one section's numerator
+    // scales the whole chain by the same factor.
+    @Test func sectionCoefficientsFoldsMasterGainIntoSection0Numerator() {
+        let band = EQBand(frequency: 1000, gain: 6, bandwidth: 1.0, filterType: .parametric)
+        let masterGainDB = -6.0
+        let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
+        let linearGain = pow(10.0, masterGainDB / 20.0)   // 10^(-0.3) ≈ 0.5011872336
+
+        let coeffs = EQCoefficients.sectionCoefficients(for: [band], sampleRate: sampleRate,
+                                                         channels: 1, masterGainDB: masterGainDB)
+
+        #expect(abs(coeffs[0] - n.b0 * linearGain) <= 1e-9)
+        #expect(abs(coeffs[1] - n.b1 * linearGain) <= 1e-9)
+        #expect(abs(coeffs[2] - n.b2 * linearGain) <= 1e-9)
+        // a1/a2 are NOT scaled by master gain.
+        #expect(abs(coeffs[3] - n.a1) <= 1e-9)
+        #expect(abs(coeffs[4] - n.a2) <= 1e-9)
+    }
+
+    // MARK: - gainDB sentinel branch: guard denMagSq > 1e-30 else { return -120.0 }
+    //
+    // Reachable only with a pole exactly on the unit circle at the probed frequency —
+    // no EQBand-derived filter in this codebase's DSP designs produces one (all designs
+    // here keep alpha/Q finite and poles strictly inside the unit circle), so this is
+    // exercised with contrived (not band-derived) BiquadCoefficients: a0=1, a1=1, a2=0
+    // normalizes to na1=1, na2=0. At Nyquist (w=π): cos(π) == -1.0 EXACTLY in IEEE-754
+    // double (cos is flat at π, so the tiny floating error in computing w doesn't
+    // perturb the rounded result) → denReal = 1 + 1·(-1) + 0·1 = 0 exactly. sin(π) ≈
+    // 1.2246e-16 (sin has nonzero slope there, so this residual is small but nonzero)
+    // → denImag ≈ -1.2246e-16, denMagSq ≈ 1.5e-32 — safely under the 1e-30 floor, so
+    // the branch DOES fire (confirmed reachable, not dead code).
+    @Test func gainDBSentinelBranchIsReachableWithPoleOnUnitCircle() {
+        let coeffs = BiquadCoefficients(b0: 1, b1: 0, b2: 0, a0: 1, a1: 1, a2: 0)
+        let gain = coeffs.gainDB(at: sampleRate / 2, sampleRate: sampleRate)
+        #expect(gain == -120.0)
     }
 
     // MARK: - CANARY (sign/order): single-section vDSP_biquadm vs scalar reference

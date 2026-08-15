@@ -12,7 +12,10 @@ import Foundation
 enum EQCoefficients {
 
     // Pre-allocated RT capacities (CONTRACT.md: max 16 sections, 2 channels).
-    static let maxSections = 16
+    // CANONICAL value lives on EQPresetData.maxBandCount (Sources/Model) — the RT
+    // buffer just needs to hold at least as many sections as a preset can have bands;
+    // mirrored here rather than re-declared so the two ceilings can't drift apart.
+    static let maxSections = EQPresetData.maxBandCount
     static let channels = 2
 
     /// SINGLE POINT OF TRUTH for the (section, channel) → flat coefficient index in
@@ -42,23 +45,93 @@ enum EQCoefficients {
     ///
     /// `channels` defaults to the fixed engine channel count; tests build a single
     /// channel to compare against a scalar reference.
-    // Single-entry memoization: N devices commonly share the same bands/masterGainDB
-    // (one global EQ applied to several devices), so consecutive calls while
-    // reconciling devices would otherwise recompute identical output per device.
-    // Safe as a plain static: all call sites run on the main actor.
+    //
+    // Multi-entry memoization, keyed per distinct device configuration
+    // (bands/mutedFlags/sampleRate/channels/masterGainDB): N devices commonly share
+    // the same bands/masterGainDB (one global EQ applied to several devices) but can
+    // differ in sampleRate — a single-slot cache thrashed to near-0% hit rate with
+    // 2+ devices at different sample rates, since each device's coalesced update
+    // tick evicted the other's entry. Capacity is a small bound (`cacheCapacity`),
+    // simple LRU eviction — the app's own soft cap is 4 simultaneous devices
+    // (OutputDeviceEQCoordinator.maxSimultaneousDevices), so this only ever needs to
+    // hold a handful of entries; no need for anything fancier.
+    //
+    // Thread-safety: `sectionCoefficients` is called only from the main-actor
+    // coalescing path (EQDeviceEngine+LiveUpdate.swift's flushPendingUpdate,
+    // EQDeviceEngine+RTState.swift's installBiquadSetup) — NEVER from the RT IOProc
+    // callback — so a lock here is not an RT-safety violation. It IS still needed:
+    // Tests/eqYourMacbookTests/EngineCoefficientTests.swift's `@Test` functions run
+    // concurrently by default (Swift Testing parallelizes within a non-`.serialized`
+    // `@Suite`), and were mutating this single static cache with no synchronization
+    // at all — a real concurrent read/write race on the cache's backing Arrays
+    // (COW, refcounted), independent of the per-device thrash problem above. A plain
+    // `NSLock` around the small linear scan is simplest and idiomatic for a static
+    // cache this size (an array, not a Dictionary: `EQBand` isn't `Hashable`, and a
+    // ≤`cacheCapacity`-entry linear scan is cheap enough that keying by a hash isn't
+    // worth the complexity).
+    //
     // EQBand.== ignores `muted`/`id` (preset value identity, not runtime state), but
     // muted affects this function's output, so the cache key tracks it separately.
-    private nonisolated(unsafe) static var cache: (bands: [EQBand], mutedFlags: [Bool],
-                                                    sampleRate: Double, channels: Int,
-                                                    masterGainDB: Double, result: [Double])?
+    private static let cacheCapacity = 8
+
+    private final class CoefficientCache: @unchecked Sendable {
+        struct Entry {
+            let bands: [EQBand]
+            let mutedFlags: [Bool]
+            let sampleRate: Double
+            let channels: Int
+            let masterGainDB: Double
+            let result: [Double]
+        }
+
+        private let lock = NSLock()
+        // Ordered least-recently-used → most-recently-used (appended on hit/store).
+        private var entries: [Entry] = []
+
+        private func matches(_ e: Entry, bands: [EQBand], mutedFlags: [Bool],
+                              sampleRate: Double, channels: Int, masterGainDB: Double) -> Bool {
+            e.sampleRate == sampleRate && e.channels == channels && e.masterGainDB == masterGainDB
+                && e.mutedFlags == mutedFlags && e.bands == bands
+        }
+
+        func lookup(bands: [EQBand], mutedFlags: [Bool], sampleRate: Double,
+                    channels: Int, masterGainDB: Double) -> [Double]? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let idx = entries.firstIndex(where: {
+                matches($0, bands: bands, mutedFlags: mutedFlags, sampleRate: sampleRate,
+                        channels: channels, masterGainDB: masterGainDB)
+            }) else { return nil }
+            let entry = entries.remove(at: idx)
+            entries.append(entry)   // most-recently-used moves to the end
+            return entry.result
+        }
+
+        func store(bands: [EQBand], mutedFlags: [Bool], sampleRate: Double,
+                    channels: Int, masterGainDB: Double, result: [Double]) {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll {
+                matches($0, bands: bands, mutedFlags: mutedFlags, sampleRate: sampleRate,
+                        channels: channels, masterGainDB: masterGainDB)
+            }
+            entries.append(Entry(bands: bands, mutedFlags: mutedFlags, sampleRate: sampleRate,
+                                  channels: channels, masterGainDB: masterGainDB, result: result))
+            if entries.count > cacheCapacity {
+                entries.removeFirst(entries.count - cacheCapacity)   // evict least-recently-used
+            }
+        }
+    }
+
+    private static let cache = CoefficientCache()
 
     static func sectionCoefficients(for bands: [EQBand], sampleRate: Double,
                                      channels: Int = EQCoefficients.channels,
                                      masterGainDB: Double = 0) -> [Double] {
         let mutedFlags = bands.map(\.muted)
-        if let c = cache, c.bands == bands, c.mutedFlags == mutedFlags,
-           c.sampleRate == sampleRate, c.channels == channels, c.masterGainDB == masterGainDB {
-            return c.result
+        if let cached = cache.lookup(bands: bands, mutedFlags: mutedFlags, sampleRate: sampleRate,
+                                      channels: channels, masterGainDB: masterGainDB) {
+            return cached
         }
         var out = [Double](repeating: 0, count: maxSections * 5 * channels)
         // Identity everywhere first (b0=1, rest 0).
@@ -91,7 +164,8 @@ enum EQCoefficients {
                 out[base + 2] *= linearGain
             }
         }
-        cache = (bands, mutedFlags, sampleRate, channels, masterGainDB, out)
+        cache.store(bands: bands, mutedFlags: mutedFlags, sampleRate: sampleRate,
+                    channels: channels, masterGainDB: masterGainDB, result: out)
         return out
     }
 
