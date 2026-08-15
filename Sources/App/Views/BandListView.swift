@@ -6,24 +6,21 @@ struct BandListView: View {
     @EnvironmentObject private var controller: EQController
     @ObservedObject var presetStore: PresetStore
 
-    // Tracks the name being typed when saving a new preset.
     @State private var savePresetName: String = ""
     @State private var showingSaveField: Bool = false
 
     private static let rowHeight: CGFloat = 54
     private static let maxVisibleRows = 5
 
-    /// Explicit list height: a MenuBarExtra(.window) sizes itself to the content's
-    /// IDEAL size, and a ScrollView's ideal height is zero — with only `maxHeight`
-    /// the whole band list collapsed to nothing. Grow with the band count (one
-    /// row's worth for the empty-state text), cap at 5 rows, scroll beyond.
+    /// MenuBarExtra(.window) sizes to content's ideal size, and ScrollView's ideal
+    /// height is zero, so an explicit height is required. Grows with band count
+    /// (one row for the empty-state text), caps at 5 rows, scrolls beyond.
     private var listHeight: CGFloat {
         CGFloat(min(max(controller.bands.count, 1), Self.maxVisibleRows)) * Self.rowHeight
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Band list: max ~5 rows visible
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach($controller.bands) { $band in
@@ -43,9 +40,7 @@ struct BandListView: View {
             }
             .frame(height: listHeight)
 
-            // Footer toolbar
             HStack(spacing: 8) {
-                // Add band
                 Button(action: addBand) {
                     Label("Add Band", systemImage: "plus")
                         .font(.caption)
@@ -55,7 +50,6 @@ struct BandListView: View {
 
                 Spacer()
 
-                // Preset menu
                 Menu {
                     ForEach(presetStore.all) { preset in
                         Button(preset.name) { applyPreset(preset) }
@@ -78,7 +72,6 @@ struct BandListView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
 
-            // Inline save-preset field
             if showingSaveField {
                 HStack {
                     TextField("Preset name", text: $savePresetName)
@@ -115,7 +108,7 @@ struct BandListView: View {
 
     private func deleteBand(id: UUID) {
         controller.bands.removeAll { $0.id == id }
-        // Zero bands is valid; EQCurveView renders a flat midline, engine runs identity passthrough.
+        // Zero bands is valid: flat midline in the curve, identity passthrough in the engine.
     }
 
     private func applyPreset(_ preset: EQPresetData) {

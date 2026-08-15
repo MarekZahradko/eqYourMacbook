@@ -26,7 +26,6 @@ final class PresetStore: ObservableObject {
             id: UUID(),
             name: name,
             bands: bands,
-            rightBands: nil,
             isBuiltIn: false
         )
         customPresets.append(preset)

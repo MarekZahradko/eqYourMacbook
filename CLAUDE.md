@@ -1,9 +1,11 @@
 # eqYourMacbook — project instructions
 
-Tiny menu-bar system-wide EQ for the MacBook's **built-in speakers only**,
-built on the driverless macOS Core Audio process-tap API (no HAL driver, no
-.pkg, no root). Personal-use app, owner: Zdeněk (communicates in Czech; all
-code, comments, and docs stay in English).
+Tiny menu-bar system-wide EQ, built on the driverless macOS Core Audio
+process-tap API (no HAL driver, no .pkg, no root). Supports EQ'ing any number of
+output devices simultaneously (per-device checkboxes; built-in speakers is the
+default-enabled device on first launch) — see PLAN.md §5 "Multi-output-device EQ
+support". Personal-use app, owner: Zdeněk (communicates in Czech; all code,
+comments, and docs stay in English).
 
 ## Current state (2026-06-10)
 
@@ -34,7 +36,7 @@ scripts/test.sh              # unit tests
 
 - **Test integrity.** The unit tests encode adjudicated decisions. If
   `testVDSPBiquadmStereoMatchesScalarReference` fails, the ONLY correct fix is
-  flipping `EQEngine.flatIndex(section:channel:channels:)` (section-major vs
+  flipping `EQCoefficients.flatIndex(section:channel:channels:)` (section-major vs
   channel-major was disputed; this canary adjudicates it). Never loosen
   tolerances, never delete or skip tests to get green.
 - **RT rules.** No allocation, locks, logging, or ObjC/Swift-runtime calls in

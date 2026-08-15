@@ -34,9 +34,17 @@ final class EQModelsTests: XCTestCase {
     }
 
     func testQOctavesConversion() {
-        // round-trip: Q → octaves → Q should be stable
+        // Independent anchor: BW = 2*asinh(1/(2Q))/ln(2). For Q=1.0, asinh(0.5) ≈
+        // 0.4812118, so BW ≈ 2*0.4812118/0.6931472 ≈ 1.38857 octaves. A pure
+        // round-trip (below) can't catch two consistently-wrong mutual inverses,
+        // so this hand-computed value anchors the actual formula.
         let q: Float = 1.0
         let oct = EQBand.qToOctaves(q)
+        XCTAssertEqual(oct, 1.38857, accuracy: 1e-4)
+        let backFromAnchor = EQBand.octavesToQ(1.38857)
+        XCTAssertEqual(backFromAnchor, 1.0, accuracy: 1e-3)
+
+        // round-trip: Q → octaves → Q should be stable (secondary check)
         let back = EQBand.octavesToQ(oct)
         XCTAssertEqual(back, q, accuracy: 1e-5)
     }

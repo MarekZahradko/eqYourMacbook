@@ -36,13 +36,11 @@ struct EQCurveView: View {
         let gridColor = Color.secondary.opacity(0.2)
         var gridPath = Path()
 
-        // 0 dB midline (slightly more prominent)
         let midY = size.height / 2
         gridPath.move(to: CGPoint(x: 0, y: midY))
         gridPath.addLine(to: CGPoint(x: size.width, y: midY))
         ctx.stroke(gridPath, with: .color(.secondary.opacity(0.4)), lineWidth: 0.5)
 
-        // ±6, ±12, ±18 dB horizontal lines
         let dbMarks: [Float] = [6, 12, 18]
         for db in dbMarks {
             for sign: Float in [1, -1] {
@@ -54,7 +52,6 @@ struct EQCurveView: View {
             }
         }
 
-        // Octave vertical lines: 20, 40, 80, 160, 315, 630, 1250, 2500, 5000, 10000, 20000
         let octaveFreqs: [Double] = [20, 40, 80, 160, 315, 630, 1250, 2500, 5000, 10000, 20000]
         for f in octaveFreqs {
             var p = Path()
@@ -77,7 +74,6 @@ struct EQCurveView: View {
 
         guard !dbs.isEmpty else { return }
 
-        // Build the stroke path
         var curvePath = Path()
         for (i, (freq, db)) in zip(frequencies, dbs).enumerated() {
             let x = xForFreq(freq, width: size.width)
@@ -90,7 +86,6 @@ struct EQCurveView: View {
             }
         }
 
-        // Fill: close path down to midline
         var fillPath = curvePath
         let midY = size.height / 2
         fillPath.addLine(to: CGPoint(x: xForFreq(frequencies.last!, width: size.width), y: midY))

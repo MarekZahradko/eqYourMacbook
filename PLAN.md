@@ -107,6 +107,15 @@ We never change the default device and never run against any device other than t
 built-in speakers — which is also the most stable possible target (fixed 48 kHz,
 never disconnects). This sidesteps most known device-change bugs by design.
 
+> **Superseded by §5 multi-device support (see `docs/CONTRACT.md`).** The app no
+> longer engages/disengages on the system default-output route; instead the user
+> checks any number of output devices independently (built-in speakers checked by
+> default), each running its own tap+aggregate+IOProc concurrently. The
+> single-device design above is kept for historical rationale (why built-in
+> speakers were the original target); the component list and engage-sequence
+> below are per-device and instantiated once per checked device, not once
+> globally — see `EQDeviceEngine`/`OutputDeviceCatalog`/`OutputDeviceEQCoordinator`.
+
 ---
 
 ## 2. Components
@@ -114,15 +123,16 @@ never disconnects). This sidesteps most known device-change bugs by design.
 ```
 eqYourMacbook.app  (Swift, menu bar only, LSUIElement)
 │
-├── EQEngine            tap + aggregate device + IOProc + vDSP biquads (C-interop heavy)
-├── DeviceWatcher       default-output listener → engage()/disengage()
-├── Watchdog            zero-buffer detection → full stack rebuild; sleep/wake handling
-├── EQModel             bands [{type, freq, gainDB, Q}], coefficient math (RBJ cookbook)
+├── EQDeviceEngine          per-device tap + aggregate device + IOProc + vDSP biquads
+├── EQDeviceRTContext       per-device RT-thread scratch state + IOProc closure factory
+├── OutputDeviceCatalog     kAudioHardwarePropertyDevices listener → live output-device list
+├── OutputDeviceEQCoordinator  reconciles checked devices ↔ running EQDeviceEngine instances
+├── EQModels / EQCoefficients   bands, coefficient math (Orfanidis/Vicanek exact designs)
 ├── PresetStore         persistence (Application Support JSON), named presets
-└── UI (SwiftUI)        MenuBarExtra(.window): curve Canvas + band controls + toggles
+└── UI (SwiftUI)        MenuBarExtra(.window): curve Canvas + device rows + band controls
 ```
 
-### EQEngine — engage sequence (precise API flow)
+### EQDeviceEngine — per-device engage sequence (precise API flow)
 
 ```text
 1. pid → AudioObjectID:  kAudioHardwarePropertyTranslatePIDToProcessObject (getpid())
@@ -131,8 +141,8 @@ eqYourMacbook.app  (Swift, menu bar only, LSUIElement)
       .privateTap   = YES
       .name / .UUID set (UUID becomes the tap UID)
 3. AudioHardwareCreateProcessTap(desc, &tapID)
-4. Find built-in speakers: enumerate kAudioHardwarePropertyDevices, pick device with
-   transport type kAudioDeviceTransportTypeBuiltIn + output streams; read its UID
+4. Target device is injected by OutputDeviceEQCoordinator (from OutputDeviceCatalog's
+   live enumeration), not discovered internally — read its UID
 5. AudioHardwareCreateAggregateDevice with:
       kAudioAggregateDeviceSubDeviceListKey = [builtInUID]
       kAudioAggregateDeviceMainSubDeviceKey = builtInUID        // clock master
@@ -156,8 +166,14 @@ rendered output being re-captured). Never create the tap without it.
 
 - `vDSP_biquadm` (Accelerate): N cascaded sections × 2 channels, SIMD. Budget for
   ~10 bands is well under 1 % of one core on Apple Silicon.
-- Coefficients from the RBJ Audio EQ Cookbook — cherry-pick `BiquadResponse.swift`
-  from iqualize (complete, all 7 filter types: bell, shelves, LP/HP/BP/notch).
+- Coefficients: RBJ cookbook BW→alpha (sinh-based, gain-independent) pole placement
+  for peaking/band-pass/notch — exact-bandwidth-edge-gain-matched in practice (an
+  earlier "Orfanidis" derivation here divided alpha by the linear gain A, which was
+  a bug: the bandwidth-edge-gain condition is provably independent of A; fixed
+  2026-08-15, see `BiquadResponse.swift` and `EngineCoefficientTests.swift`) —
+  and Vicanek matched-filter design for shelves/LP/HP — replaces the original RBJ
+  Audio EQ Cookbook approximation (`BiquadResponse.swift`, all 7 filter types),
+  which measurably warped shelf/peak shape near Nyquist.
 - Latency: one hardware buffer period total. 512 frames @ 48 kHz = 10.7 ms;
   read/try `kAudioDevicePropertyBufferFrameSize` — at 256 frames it's 5.3 ms.
   (iqualize's ring-buffer + AVAudioEngine chain measures ~16–21 ms typical;
@@ -235,7 +251,7 @@ eqyourmacbook/
 ├── project.yml              (XcodeGen)
 ├── Sources/
 │   ├── App/                 (main, MenuBarExtra, views)
-│   ├── Engine/              (EQEngine, DeviceWatcher, Watchdog — Swift + C interop)
+│   ├── Engine/              (EQDeviceEngine, EQDeviceRTContext, OutputDeviceCatalog — Swift + C interop)
 │   └── Model/               (EQModel, coefficients, PresetStore)
 ├── Resources/               (Info.plist bits, entitlements, assets)
 └── scripts/                 (build.sh, sign helpers — useful for SSH loop)

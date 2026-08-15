@@ -32,7 +32,6 @@ struct StatusFooterView: View {
     private var icon: String {
         switch controller.status {
         case .active:           return "speaker.wave.2.fill"
-        case .standby:          return "pause.circle"
         case .disabled:         return "power"
         case .permissionNeeded: return "lock.shield"
         case .error:            return "exclamationmark.triangle"
@@ -42,7 +41,6 @@ struct StatusFooterView: View {
     private var iconColor: Color {
         switch controller.status {
         case .active:           return .green
-        case .standby:          return .secondary
         case .disabled:         return .orange
         case .permissionNeeded: return .orange
         case .error:            return .red

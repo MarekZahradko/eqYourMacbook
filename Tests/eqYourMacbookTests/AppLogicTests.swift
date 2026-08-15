@@ -1,79 +1,38 @@
 import XCTest
 @testable import eqYourMacbook
 
-// MARK: - shouldRun truth table
-
-final class ShouldRunTests: XCTestCase {
-
-    func testDisabledBuiltIn() {
-        XCTAssertFalse(EQController.shouldRun(
-            isEnabled: false,
-            route: .builtInSpeakers(0)
-        ))
-    }
-
-    func testDisabledOtherOutput() {
-        XCTAssertFalse(EQController.shouldRun(
-            isEnabled: false,
-            route: .other("AirPods")
-        ))
-    }
-
-    func testEnabledBuiltIn() {
-        XCTAssertTrue(EQController.shouldRun(
-            isEnabled: true,
-            route: .builtInSpeakers(0)
-        ))
-    }
-
-    func testEnabledOtherOutput() {
-        XCTAssertFalse(EQController.shouldRun(
-            isEnabled: true,
-            route: .other("HDMI TV")
-        ))
-    }
-}
-
 // MARK: - DisplayStatus derivation
+//
+// §5 (multi-output-device EQ) removed OutputRoute/DeviceWatcher and the single-route
+// shouldRun/engage policy along with them — engagement is now per-device (checkboxes
+// reconciled by OutputDeviceEQCoordinator), not a pure function of one route. What
+// remains pure and testable is the aggregate status derivation below.
 
 final class DisplayStatusTests: XCTestCase {
 
     func testDisabledAlwaysDisabled() {
         let status = EQController.deriveStatus(
             isEnabled: false,
-            route: .builtInSpeakers(0),
-            engineState: .running,
-            permissionSuspected: true
+            permissionSuspected: true,
+            errorMessage: "some error"
         )
         XCTAssertEqual(status, .disabled)
-    }
-
-    func testStandbyOnOtherOutput() {
-        let status = EQController.deriveStatus(
-            isEnabled: true,
-            route: .other("AirPods Max"),
-            engineState: .running,
-            permissionSuspected: false
-        )
-        XCTAssertEqual(status, .standby(otherOutput: "AirPods Max"))
     }
 
     func testPermissionNeeded() {
         let status = EQController.deriveStatus(
             isEnabled: true,
-            route: .builtInSpeakers(0),
-            engineState: .running,
-            permissionSuspected: true
+            permissionSuspected: true,
+            errorMessage: nil
         )
         XCTAssertEqual(status, .permissionNeeded)
     }
 
-    func testActiveWhenRunningBuiltIn() {
+    func testActiveWhenEnabledNoIssues() {
         let status = EQController.deriveStatus(
             isEnabled: true,
-            route: .builtInSpeakers(0),
-            engineState: .running,
-            permissionSuspected: false
+            permissionSuspected: false,
+            errorMessage: nil
         )
         XCTAssertEqual(status, .active)
     }
@@ -82,36 +41,22 @@ final class DisplayStatusTests: XCTestCase {
         let msg = "device not found"
         let status = EQController.deriveStatus(
             isEnabled: true,
-            route: .builtInSpeakers(0),
-            engineState: .failed(msg),
-            permissionSuspected: false
+            permissionSuspected: false,
+            errorMessage: msg
         )
         XCTAssertEqual(status, .error(msg))
     }
 
-    // TCC denial causes start() to fail; permissionSuspected must win over .failed
-    // so the user sees the actionable "grant permission" message, not a generic error.
-    func testPermissionSuspectedBeatsFailedEngine() {
+    // TCC denial causes an engine's start() to fail; permissionSuspected must win over
+    // errorMessage so the user sees the actionable "grant permission" message, not a
+    // generic error string.
+    func testPermissionSuspectedBeatsError() {
         let status = EQController.deriveStatus(
             isEnabled: true,
-            route: .builtInSpeakers(0),
-            engineState: .failed("aggregate device error"),
-            permissionSuspected: true
+            permissionSuspected: true,
+            errorMessage: "aggregate device error"
         )
         XCTAssertEqual(status, .permissionNeeded)
-    }
-
-    func testStoppedEngineShowsStandby() {
-        let status = EQController.deriveStatus(
-            isEnabled: true,
-            route: .builtInSpeakers(0),
-            engineState: .stopped,
-            permissionSuspected: false
-        )
-        // .stopped on built-in while enabled is a transient state; shown as standby
-        if case .standby = status { /* pass */ } else {
-            XCTFail("Expected standby, got \(status)")
-        }
     }
 }
 
@@ -135,7 +80,7 @@ final class SuggestFrequencyTests: XCTestCase {
 
     func testInstanceMethodDelegatesToStatic() {
         let bands = [EQBand(frequency: 1000, gain: 0)]
-        let preset = EQPresetData(id: UUID(), name: "", bands: bands, rightBands: nil, isBuiltIn: false)
+        let preset = EQPresetData(id: UUID(), name: "", bands: bands, isBuiltIn: false)
         XCTAssertEqual(preset.suggestNewBandFrequency(),
                        EQPresetData.suggestFrequency(for: bands))
     }

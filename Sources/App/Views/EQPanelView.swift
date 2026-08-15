@@ -9,19 +9,16 @@ struct EQPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
 
-            // ── Header ────────────────────────────────────────────────────────
             HStack {
                 Text("eqYourMacbook")
                     .font(.headline)
                 Spacer()
-                // A/B Compare: pressing holds bypass; releasing restores.
                 // Toggle(.button) gives the hold-to-compare feel without custom gestures.
                 Toggle("Compare", isOn: $controller.isABBypassed)
                     .toggleStyle(.button)
                     .controlSize(.small)
                     .help("Hold to A/B compare — bypasses EQ without restarting the engine")
 
-                // Master enable toggle
                 Toggle("EQ", isOn: $controller.isEnabled)
                     .toggleStyle(.button)
                     .controlSize(.small)
@@ -31,9 +28,18 @@ struct EQPanelView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
 
+            VStack(spacing: 0) {
+                ForEach(controller.deviceRows) { row in
+                    DeviceRowView(row: row) { checked in
+                        controller.setDeviceEnabled(checked, deviceID: row.id)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+
             Divider()
 
-            // ── Frequency Response Curve ──────────────────────────────────────
             EQCurveView(
                 bands: controller.bands,
                 dimmed: !controller.isEnabled || controller.isABBypassed
@@ -43,17 +49,24 @@ struct EQPanelView: View {
 
             Divider()
 
-            // ── Band List + Preset toolbar ────────────────────────────────────
             BandListView(presetStore: presetStore)
 
             Divider()
 
-            // ── Bottom footer ─────────────────────────────────────────────────
             StatusFooterView()
 
             Divider()
 
-            // ── Settings row ──────────────────────────────────────────────────
+            HStack {
+                Toggle("Gain-Staging", isOn: $controller.gainStagingEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Automatically lowers the overall level to avoid clipping when any band boosts above 0 dB. Has no effect if every band is at 0 dB or cut.")
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+
             HStack {
                 Toggle("Launch at Login", isOn: Binding(
                     get: { controller.launchAtLogin },

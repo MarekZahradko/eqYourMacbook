@@ -15,6 +15,30 @@ ServiceManagement. No third-party dependencies.
 
 ## Engine module (`Sources/Engine/`)
 
+Coefficient math lives in a standalone, non-actor-isolated `EQCoefficients` enum
+(`Sources/Engine/EQCoefficients.swift`) so both `EQDeviceEngine` and the RT IOProc
+factory can reach it without depending on the full engine class:
+
+```swift
+enum EQCoefficients {
+    static let maxSections: Int   // 16
+    static let channels: Int      // 2
+    static func flatIndex(section: Int, channel: Int, channels: Int) -> Int
+    static func sectionCoefficients(for bands: [EQBand], sampleRate: Double,
+                                     channels: Int = EQCoefficients.channels,
+                                     masterGainDB: Double = 0) -> [Double]
+    static func masterGainDB(for bands: [EQBand], enabled: Bool) -> Double
+}
+```
+
+Per-device RT (real-time thread) state lives in a `final class EQDeviceRTContext`
+(`Sources/Engine/EQDeviceRTContext.swift`) — a REFERENCE type, not a struct, because
+it is captured by a concurrently-running IOProc block and must never relocate. Each
+`EQDeviceEngine` owns exactly one. `makeIOBlock(context:) -> AudioDeviceIOBlock`
+builds the IOProc closure bound to one context — this replaces the old single-instance
+file-private `rt*` globals + one shared `rtIOBlock`, now that N devices can run
+concurrently (§5).
+
 ```swift
 import CoreAudio
 
@@ -24,24 +48,28 @@ enum EngineState: Equatable {
     case failed(String)       // last start() attempt failed
 }
 
-enum OutputRoute: Equatable {
-    case builtInSpeakers(AudioObjectID)
-    case other(String)        // human-readable device name
-}
-
-@MainActor protocol EQEngineDelegate: AnyObject {
-    func engine(_ engine: EQEngine, didChangeState state: EngineState)
+@MainActor protocol EQDeviceEngineDelegate: AnyObject {
+    func engine(_ engine: EQDeviceEngine, didChangeState state: EngineState)
     // Watchdog rebuilt once and input is still all-zero → TCC denial likely.
-    func engineSuspectsPermissionDenied(_ engine: EQEngine)
+    func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine)
 }
 
-@MainActor final class EQEngine {
-    weak var delegate: EQEngineDelegate?
+@MainActor final class EQDeviceEngine {
+    // Target device is injected, not discovered internally — the caller
+    // (OutputDeviceEQCoordinator) decides which device this instance EQs.
+    let deviceID: AudioObjectID
+    let deviceUID: String
+    let deviceName: String
+
+    weak var delegate: EQDeviceEngineDelegate?
     private(set) var state: EngineState   // = .stopped initially
 
+    init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
+         tapService: CoreAudioTapServicing = LiveCoreAudioTapService())
+
     // Idempotent. Builds: own-PID-excluded global tap (mute-on-tap) → private
-    // aggregate (built-in speakers = main sub-device + tap in CREATION dict)
-    // → IOProc (input → vDSP_biquadm → output). Finds built-in speakers itself.
+    // aggregate (THIS instance's deviceUID = main sub-device + tap in CREATION
+    // dict) → IOProc (input → vDSP_biquadm → output).
     func start(bands: [EQBand])
 
     // Idempotent. Full teardown, strict order: AudioDeviceStop →
@@ -57,11 +85,22 @@ enum OutputRoute: Equatable {
     // Instant A/B compare: identity passthrough without teardown.
     // RT-safe atomic flag read in the IO callback.
     var isBypassed: Bool { get set }
+    var gainStagingEnabled: Bool { get set }
 }
 ```
 
+`CoreAudioTapServicing` (`Sources/Engine/EQDeviceEngine.swift`) is a narrow testability
+seam wrapping only the CoreAudio calls `start()`/`stop()` make (create/destroy tap,
+create/destroy aggregate, create/destroy IOProc, start/stop device). `LiveCoreAudioTapService`
+is the default, real implementation; production call sites never pass anything else.
+
+IMPORTANT (open risk, §5): a `stereoGlobalTapButExcludeProcesses` tap captures ALL
+system audio (minus this app's own process). N enabled devices → N taps, all seeing
+the SAME source signal, each independently EQ'd and routed to its own device — this is
+intentional ("apply this app's EQ to this output"), not per-device source routing.
+
 Engine semantics (internal, not negotiable):
-- Engine NEVER decides policy (when to run) — the controller does.
+- Engine NEVER decides policy (when to run) — `OutputDeviceEQCoordinator` does.
 - RT callback rules: no allocation, no locks, no logging, no Objective-C/Swift
   runtime calls; pre-allocated buffers sized at start(); max 16 biquad sections
   pre-allocated, unused sections set to identity.
@@ -73,56 +112,127 @@ Engine semantics (internal, not negotiable):
   legitimate when nothing is playing and must not trip the watchdog. 2 consecutive
   silent checks → one silent rebuild (stop+start); if silence persists after the
   rebuild → `engineSuspectsPermissionDenied`. Watchdog timer must not run when stopped.
-- Watchdog ↔ delegate idempotency (the controller treats repeated `.running`
+- Watchdog ↔ delegate idempotency (the coordinator treats repeated `.running`
   notifications as idempotent — it MUST keep doing so):
   - After a successful silent rebuild the engine fires
     `didChangeState(.running)` UNCONDITIONALLY (bypassing the internal state-equality
-    guard, since state stayed `.running` throughout the rebuild) so the controller
+    guard, since state stayed `.running` throughout the rebuild) so the coordinator
     knows the chain is healthy again.
   - When the watchdog later observes max-abs > 0 while a permission-suspected
     condition had been raised, the engine clears that internal suspicion and fires
-    `didChangeState(.running)` again so the controller can clear its
-    `permissionNeeded` status.
+    `didChangeState(.running)` again so the coordinator can clear its
+    `permissionNeeded` status for that device.
 - Sleep/wake: engine observes `NSWorkspace.didWakeNotification` while running
   and schedules a rebuild ~1 s after wake (iqualize-proven timing).
 
 ```swift
-@MainActor final class DeviceWatcher {
-    private(set) var currentRoute: OutputRoute
-    var onRouteChange: ((OutputRoute) -> Void)?   // fired on main actor
-    func start()   // listener on kAudioHardwarePropertyDefaultOutputDevice
+struct OutputDeviceInfo: Identifiable, Equatable {
+    let id: AudioObjectID
+    let uid: String
+    let name: String
+    let isBuiltIn: Bool
+}
+
+@MainActor final class OutputDeviceCatalog {
+    private(set) var devices: [OutputDeviceInfo]
+    var onDevicesChanged: (([OutputDeviceInfo]) -> Void)?   // fired on main actor
+    func start()   // listener on kAudioHardwarePropertyDevices; also does initial enumerate()
     func stop()
 }
 ```
 
-Built-in detection: default output device's `kAudioDevicePropertyTransportType
-== kAudioDeviceTransportTypeBuiltIn` (and has output streams).
+Enumeration: every device with output streams (`deviceHasOutputStreams`), excluding
+transport type `kAudioDeviceTransportTypeAggregate` (this app's own private aggregates
+report as aggregate transport — VERIFY ON FIRST MAC BUILD that they don't otherwise
+surface here). Built-in (`kAudioDeviceTransportTypeBuiltIn`) sorted first; remainder in
+HAL-returned order, not alphabetized.
 
 ## App module (`Sources/App/`)
 
 ```swift
-@MainActor final class EQController: ObservableObject, EQEngineDelegate {
+struct DeviceRowViewModel: Identifiable, Equatable {
+    let id: AudioObjectID
+    let name: String
+    let isBuiltIn: Bool
+    var isChecked: Bool     // user intent (persisted via enabledDeviceUIDs)
+    var isRunning: Bool     // engine.state == .running right now
+}
+
+struct AggregateEngineStatus: Equatable {
+    var anyRunning: Bool
+    var permissionNeeded: Bool
+    var errorMessage: String?
+}
+
+@MainActor final class OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
+    private(set) var deviceRows: [DeviceRowViewModel]
+    private(set) var enabledDeviceUIDs: Set<String>   // persisted, keyed by device UID
+    var onDeviceRowsChanged: (([DeviceRowViewModel]) -> Void)?
+    var onAggregateStatusChanged: ((AggregateEngineStatus) -> Void)?
+
+    func start()
+    func stop()
+    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID)
+    func setGloballyEnabled(_ enabled: Bool)     // master on/off, gates all reconciliation
+    func updateBands(_ bands: [EQBand])          // fans out to every running engine
+    func updateBypass(_ bypassed: Bool)
+    func setGainStagingEnabled(_ enabled: Bool)
+}
+```
+
+Delegate-forwarding design: `OutputDeviceEQCoordinator` is the single
+`EQDeviceEngineDelegate` for every `EQDeviceEngine` it creates (one coordinator
+instance standing in for N engines). Each callback identifies its device via
+`engine.deviceID`; the coordinator tracks per-device `EngineState`/permission-suspected
+flags and collapses them into one `AggregateEngineStatus`, published via
+`onAggregateStatusChanged`. `EQController` consumes only that aggregate, plus
+`deviceRows` for the per-device checkbox list — it does not implement the delegate
+protocol itself.
+
+Reconciliation (`reconcile()`, private): for each catalog device whose UID is in
+`enabledDeviceUIDs` and the master switch is on, with no running engine → create
+`EQDeviceEngine(deviceID:deviceUID:deviceName:)`, start it. For each running engine
+whose device disappeared from the catalog → stop it, remove from the running set,
+but KEEP its UID in `enabledDeviceUIDs` (replugging auto-resumes). For a device the
+user explicitly unchecked → stop it and remove its UID from `enabledDeviceUIDs`. A
+soft cap (`maxSimultaneousDevices = 4`) bounds how many engines run at once — N
+concurrent aggregate+tap+IOProc sets is architecturally supported but UNVERIFIED on
+real hardware (needs manual multi-device testing on first Mac build).
+
+Persistence: `enabledDeviceUIDs` — `UserDefaults.standard`, key
+`eqym.enabledDeviceUIDs`, JSON-encoded `[String]` (UIDs, not `AudioObjectID`s, since
+object IDs are session-scoped/unstable across reboot+replug). First launch: seeded
+with just the built-in speakers' UID once the catalog discovers it.
+
+```swift
+@MainActor final class EQController: ObservableObject {
     @Published var isEnabled: Bool          // master switch, persisted
-    @Published var bands: [EQBand]          // persisted; pushes engine.update
-    @Published var isABBypassed: Bool       // forwards to engine.isBypassed
+    @Published var bands: [EQBand]          // persisted; pushes coordinator.updateBands
+    @Published var isABBypassed: Bool       // forwards to coordinator.updateBypass
+    @Published var gainStagingEnabled: Bool // forwards to coordinator.setGainStagingEnabled
+    @Published private(set) var deviceRows: [DeviceRowViewModel]
     var launchAtLogin: Bool                 // computed; SMAppService is the SSOT,
                                             // sends objectWillChange manually
     @Published private(set) var status: DisplayStatus
+
+    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID)
 }
 
 enum DisplayStatus: Equatable {
-    case active                       // engaged on built-in speakers
-    case standby(otherOutput: String) // auto-bypassed: not on built-ins
-    case disabled                     // user switched off
-    case permissionNeeded             // from engineSuspectsPermissionDenied
+    case active            // master enabled; per-device rows show running detail
+    case disabled          // user switched off
+    case permissionNeeded  // any engine's watchdog suspects TCC denial
     case error(String)
 }
 ```
 
-Engage policy (single source of truth, in EQController):
-`isEnabled && currentRoute is .builtInSpeakers` → `engine.start(bands:)`,
-otherwise `engine.stop()`. Re-evaluated on: isEnabled change, route change,
-app launch.
+Engage policy: there is no single "route" anymore (any number of devices can run
+simultaneously) — engagement is per-device, driven by each `DeviceRowView` checkbox
+and reconciled by `OutputDeviceEQCoordinator`. `isEnabled` is the master kill switch:
+`false` stops every running engine regardless of checkbox state; `true` reconciles
+per checkbox state. `DisplayStatus.active` means only "master switch is on" — it does
+NOT imply every checked device is currently running (see `deviceRows[].isRunning` for
+that, and `EQController.statusDetail` for the human-readable running count).
 
 Persistence: `UserDefaults.standard`, keys prefixed `eqym.` (`eqym.bands`,
 `eqym.isEnabled`, `eqym.customPresets`), JSON-encoded via Codable. Band count

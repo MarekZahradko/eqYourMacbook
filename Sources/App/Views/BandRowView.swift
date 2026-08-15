@@ -6,7 +6,7 @@ struct BandRowView: View {
     @Binding var band: EQBand
     let onDelete: () -> Void
 
-    // Computed log-scale slider position (0...1) ↔ frequency 20–20000 Hz
+    /// Log-scale slider position (0...1) ↔ frequency 20–20000 Hz
     private var logSliderValue: Double {
         get { (log10(Double(band.frequency)) - log10(20.0)) / (log10(20000.0) - log10(20.0)) }
     }
@@ -21,7 +21,6 @@ struct BandRowView: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            // Row 1: type, frequency slider, mute, delete
             HStack(spacing: 6) {
                 Picker("", selection: $band.filterType) {
                     ForEach(FilterType.allCases, id: \.self) { ft in
@@ -34,15 +33,14 @@ struct BandRowView: View {
                 .onChange(of: band.filterType) { _, newType in
                     switch newType {
                     case .lowPass, .highPass, .bandPass, .notch:
-                        // Reset to Butterworth-ish slope; gain is meaningless for pass/notch.
+                        // Reset to Butterworth-ish slope; gain is meaningless here.
                         band.bandwidth = EQBand.qToOctaves(0.707)
                         band.gain = 0
                     case .parametric, .lowShelf, .highShelf:
-                        break   // keep whatever the user had
+                        break
                     }
                 }
 
-                // Log-frequency slider
                 Slider(
                     value: Binding(
                         get: { logSliderValue },
@@ -58,14 +56,12 @@ struct BandRowView: View {
                     .font(.caption2.monospacedDigit())
                     .frame(width: 56, alignment: .trailing)
 
-                // Mute
                 Button(action: { band.muted.toggle() }) {
                     Image(systemName: band.muted ? "speaker.slash.fill" : "speaker.fill")
                         .foregroundColor(band.muted ? .secondary : .primary)
                 }
                 .buttonStyle(.borderless)
 
-                // Delete
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .foregroundColor(.secondary)
@@ -73,7 +69,6 @@ struct BandRowView: View {
                 .buttonStyle(.borderless)
             }
 
-            // Row 2: gain slider + bandwidth stepper
             HStack(spacing: 6) {
                 Text("Gain")
                     .font(.caption2)

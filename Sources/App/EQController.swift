@@ -1,46 +1,55 @@
+import CoreAudio
 import SwiftUI
 import ServiceManagement
 import os.log
 
 // MARK: - DisplayStatus
 
+/// N devices can run at once, so there's no single "route" to derive standby/active
+/// from. Per-device running state lives in DeviceRowView; this is the aggregate
+/// master-switch/health line the footer shows.
 enum DisplayStatus: Equatable {
-    case active                        // EQ engaged on built-in speakers
-    case standby(otherOutput: String)  // enabled but output is not built-in
+    case active                        // master enabled (per-device rows show detail)
     case disabled                      // user switched off
-    case permissionNeeded              // watchdog detected all-zero input
+    case permissionNeeded              // any engine's watchdog detected all-zero input
     case error(String)
 }
 
 // MARK: - EQController
 
 @MainActor
-final class EQController: ObservableObject, EQEngineDelegate {
+final class EQController: ObservableObject {
 
     // MARK: Published state
 
     @Published var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Keys.isEnabled)
-            reevaluate()
+            coordinator.setGloballyEnabled(isEnabled)
+            updateStatus()
         }
     }
 
     @Published var bands: [EQBand] {
         didSet {
-            if case .running = engine.state {
-                engine.update(bands: bands)
-            }
+            coordinator.updateBands(bands)
             persistBands()
         }
     }
 
     @Published var isABBypassed: Bool = false {
-        didSet { engine.isBypassed = isABBypassed }
+        didSet { coordinator.updateBypass(isABBypassed) }
     }
 
-    // Computed — no storage needed; SMAppService is the SSOT.
-    // Manually sends objectWillChange so the Toggle re-renders after register/unregister.
+    @Published var gainStagingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(gainStagingEnabled, forKey: Keys.gainStagingEnabled)
+            coordinator.setGainStagingEnabled(gainStagingEnabled)
+        }
+    }
+
+    // No storage needed; SMAppService is the source of truth. Sends objectWillChange
+    // manually so the Toggle re-renders after register/unregister.
     var launchAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -60,33 +69,33 @@ final class EQController: ObservableObject, EQEngineDelegate {
     }
 
     @Published private(set) var status: DisplayStatus = .disabled
+    @Published private(set) var deviceRows: [DeviceRowViewModel] = []
 
     // MARK: Private state
 
-    private let engine = EQEngine()
-    private let watcher = DeviceWatcher()
-    private var permissionSuspected = false
+    private let coordinator = OutputDeviceEQCoordinator()
+    private var lastAggregateStatus = AggregateEngineStatus(anyRunning: false, permissionNeeded: false, errorMessage: nil)
 
-    // Keeps the launchAtLogin computed property stable across reads in a single
-    // rendering pass (SMAppService.mainApp.status is not free to call repeatedly).
     var statusDetail: String {
         switch status {
-        case .active:                    return "EQ active on built-in speakers"
-        case .standby(let name):         return "Standby — output: \(name)"
-        case .disabled:                  return "EQ is off"
-        case .permissionNeeded:          return "System Audio Recording permission needed"
-        case .error(let msg):            return "Error: \(msg)"
+        case .active:
+            let runningCount = deviceRows.filter(\.isRunning).count
+            if runningCount == 0 { return "EQ enabled — no output devices selected" }
+            if runningCount == 1 { return "EQ active on 1 device" }
+            return "EQ active on \(runningCount) devices"
+        case .disabled:         return "EQ is off"
+        case .permissionNeeded: return "System Audio Recording permission needed"
+        case .error(let msg):   return "Error: \(msg)"
         }
     }
 
     // MARK: Init
 
     init() {
-        // Load persisted enabled flag; default true on first launch.
         let storedEnabled = UserDefaults.standard.object(forKey: Keys.isEnabled) as? Bool ?? true
         isEnabled = storedEnabled
+        gainStagingEnabled = UserDefaults.standard.object(forKey: Keys.gainStagingEnabled) as? Bool ?? true
 
-        // Load persisted bands; default to MBA preset on first launch.
         if let data = UserDefaults.standard.data(forKey: Keys.bands),
            let decoded = try? JSONDecoder().decode([EQBand].self, from: data) {
             bands = decoded
@@ -94,82 +103,51 @@ final class EQController: ObservableObject, EQEngineDelegate {
             bands = EQPresetData.mbaTameTheHighs.bands
         }
 
-        // Wire engine and watcher.
-        engine.delegate = self
-        watcher.onRouteChange = { [weak self] route in
-            self?.handleRouteChange(route)
+        // Fans updates out to every per-device EQDeviceEngine and forwards their
+        // delegate callbacks back up as one aggregate status.
+        coordinator.onDeviceRowsChanged = { [weak self] rows in
+            self?.deviceRows = rows
+            self?.updateStatus()
         }
-        watcher.start()
-
-        // Initial policy evaluation against the current route.
-        reevaluate()
-    }
-
-    // MARK: Engage policy
-
-    /// Pure function — testable without CoreAudio or any instance state.
-    nonisolated static func shouldRun(isEnabled: Bool, route: OutputRoute) -> Bool {
-        guard isEnabled else { return false }
-        if case .builtInSpeakers = route { return true }
-        return false
-    }
-
-    func reevaluate() {
-        let route = watcher.currentRoute
-        if Self.shouldRun(isEnabled: isEnabled, route: route) {
-            engine.start(bands: bands)
-        } else {
-            engine.stop()
+        coordinator.onAggregateStatusChanged = { [weak self] aggregate in
+            guard let self else { return }
+            self.lastAggregateStatus = aggregate
+            self.updateStatus()
         }
+        coordinator.setGainStagingEnabled(gainStagingEnabled)
+        coordinator.updateBands(bands)
+        coordinator.start()
+        coordinator.setGloballyEnabled(isEnabled)
+
         updateStatus()
-    }
-
-    // MARK: Route change
-
-    private func handleRouteChange(_ route: OutputRoute) {
-        reevaluate()
     }
 
     // MARK: DisplayStatus derivation
 
-    /// Pure function — testable without any instance.
+    /// permissionSuspected beats errorMessage: a TCC denial causes start() to fail,
+    /// and permissionNeeded gives an actionable recovery path over a raw CoreAudio error.
     nonisolated static func deriveStatus(
         isEnabled: Bool,
-        route: OutputRoute,
-        engineState: EngineState,
-        permissionSuspected: Bool
+        permissionSuspected: Bool,
+        errorMessage: String?
     ) -> DisplayStatus {
         guard isEnabled else { return .disabled }
-        if case .other(let name) = route { return .standby(otherOutput: name) }
-        // permissionSuspected beats .failed: TCC denial causes start() to fail;
-        // showing permissionNeeded gives the user an actionable recovery path.
         if permissionSuspected { return .permissionNeeded }
-        switch engineState {
-        case .running:       return .active
-        case .failed(let m): return .error(m)
-        case .stopped:       return .standby(otherOutput: "—")
-        }
+        if let errorMessage { return .error(errorMessage) }
+        return .active
     }
 
     private func updateStatus() {
         status = Self.deriveStatus(
             isEnabled: isEnabled,
-            route: watcher.currentRoute,
-            engineState: engine.state,
-            permissionSuspected: permissionSuspected
-        )
+            permissionSuspected: lastAggregateStatus.permissionNeeded,
+            errorMessage: lastAggregateStatus.errorMessage)
     }
 
-    // MARK: EQEngineDelegate
+    // MARK: Device checkboxes
 
-    func engine(_ engine: EQEngine, didChangeState state: EngineState) {
-        if case .running = state { permissionSuspected = false }
-        updateStatus()
-    }
-
-    func engineSuspectsPermissionDenied(_ engine: EQEngine) {
-        permissionSuspected = true
-        updateStatus()
+    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID) {
+        coordinator.setDeviceEnabled(enabled, deviceID: deviceID)
     }
 
     // MARK: Privacy Settings
@@ -192,5 +170,6 @@ final class EQController: ObservableObject, EQEngineDelegate {
     private enum Keys {
         static let isEnabled = "eqym.isEnabled"
         static let bands     = "eqym.bands"
+        static let gainStagingEnabled = "eqym.gainStagingEnabled"
     }
 }
