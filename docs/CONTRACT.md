@@ -35,9 +35,7 @@ Per-device RT (real-time thread) state lives in a `final class EQDeviceRTContext
 (`Sources/Engine/EQDeviceRTContext.swift`) — a REFERENCE type, not a struct, because
 it is captured by a concurrently-running IOProc block and must never relocate. Each
 `EQDeviceEngine` owns exactly one. `makeIOBlock(context:) -> AudioDeviceIOBlock`
-builds the IOProc closure bound to one context — this replaces the old single-instance
-file-private `rt*` globals + one shared `rtIOBlock`, now that N devices can run
-concurrently (§5).
+builds the IOProc closure bound to one context.
 
 ```swift
 import CoreAudio
@@ -68,7 +66,8 @@ enum EngineState: Equatable {
     private(set) var state: EngineState   // = .stopped initially
 
     init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
-         tapService: CoreAudioTapServicing = LiveCoreAudioTapService())
+         tapService: CoreAudioTapServicing = LiveCoreAudioTapService(),
+         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter)
 
     // Idempotent. Builds: own-PID-excluded global tap (mute-on-tap) → private
     // aggregate (THIS instance's deviceUID = main sub-device + tap in CREATION
@@ -104,14 +103,13 @@ Without these two also going through the seam, a test double could never reach `
 `LiveCoreAudioTapService` is the default, real implementation; production call sites never
 pass anything else.
 
-IMPORTANT (resolved, was open risk in §5): a `stereoGlobalTapButExcludeProcesses` tap
-mutes captured processes' audio SYSTEM-WIDE, not per-device — CoreAudio has no
-device-scoped tap/mute mode. Running more than one engine at once (or running an
-engine for a device that isn't the OS's current default-output route) would silence
-audio everywhere while nothing plays through the actually-active device. This
-invalidates the earlier "N enabled devices → N simultaneous taps" design: at most one
-engine may ever run, for the one device that is BOTH user-enabled AND the current
-default-output route. See "Engage policy" below for the enforced invariant.
+IMPORTANT: a `stereoGlobalTapButExcludeProcesses` tap mutes captured processes' audio
+SYSTEM-WIDE, not per-device — CoreAudio has no device-scoped tap/mute mode. Running
+more than one engine at once (or running an engine for a device that isn't the OS's
+current default-output route) would silence audio everywhere while nothing plays
+through the actually-active device. At most one engine may ever run, for the one
+device that is BOTH user-enabled AND the current default-output route. See "Engage
+policy" below for the enforced invariant.
 
 Engine semantics (internal, not negotiable):
 - Engine NEVER decides policy (when to run) — `OutputDeviceEQCoordinator` does.
@@ -209,6 +207,26 @@ struct AggregateEngineStatus: Equatable {
 }
 ```
 
+Testability seams (both constructor-injected, both defaulting to exact production
+behavior so no real call site — `EQController.init`'s `OutputDeviceEQCoordinator()`
+included — is affected): `init(enabledUIDStore: EnabledDeviceUIDStore = EnabledDeviceUIDStore(),
+engineFactory: EngineFactory = { EQDeviceEngine(deviceID: $0, deviceUID: $1, deviceName: $2) })`.
+`enabledUIDStore` mirrors `EnabledDeviceUIDStore`'s own `defaults:` seam, letting a test point
+a coordinator at an isolated `UserDefaults` suite. `engineFactory` (`typealias EngineFactory =
+(AudioObjectID, String, String) -> EQDeviceEngine`) is `reconcile()`'s only way to construct an
+`EQDeviceEngine` — injecting one that builds engines backed by `FakeCoreAudioTapService` lets a
+test drive `reconcile()`'s actual start/stop glue and this class's `EQDeviceEngineDelegate`
+conformance without touching live CoreAudio. `OutputDeviceCatalog` has a matching
+`setDevices(_:)` hook (mirrors `OutputDeviceEQCoordinator`'s own `setDeviceRows(_:)`/
+`setEnabledDeviceUIDs(_:)` pattern) so a test can populate `catalog.devices` with a synthetic
+list without ever calling `catalog.start()` (which would register a live device-list listener).
+None of this closes the one remaining gap: `reconcile()` unconditionally re-reads the CURRENT
+default-output-route UID from live CoreAudio (`getDefaultOutputDeviceID()`/`getDeviceUID(_:)`,
+unseamed) on every call, so a test cannot simulate the OS's route changing mid-test — only
+read whatever it actually is on the machine running the test. See
+`OutputDeviceEQCoordinatorIntegrationTests.swift`'s header comment for how tests work with
+(not around) this constraint.
+
 Delegate-forwarding design: `OutputDeviceEQCoordinator` is the single
 `EQDeviceEngineDelegate` for every `EQDeviceEngine` it creates (one coordinator
 instance standing in for N engines). Each callback identifies its device via
@@ -218,10 +236,17 @@ flags and collapses them into one `AggregateEngineStatus`, published via
 `deviceRows` for the per-device checkbox list — it does not implement the delegate
 protocol itself.
 
-Reconciliation (`reconcile()`, private): tracks `currentDefaultOutputDeviceUID`
-(refreshed via `getDefaultOutputDeviceID()` on every reconcile, and on every
-`kAudioHardwarePropertyDefaultOutputDevice` change — the coordinator listens for it,
-mirroring `OutputDeviceCatalog`'s device-list listener). For the catalog device whose
+Reconciliation (`reconcile()` — internal, not part of this contract's public surface;
+the coordinator's implementation is split across `OutputDeviceEQCoordinator.swift` and
+several same-module `OutputDeviceEQCoordinator+*.swift` extension files, so `reconcile()`
+and its collaborators are no longer literally `private`, only un-exported outside the
+module): tracks `currentDefaultOutputDeviceUID` (refreshed via `getDefaultOutputDeviceID()`
+on every reconcile). The coordinator also listens for
+`kAudioHardwarePropertyDefaultOutputDevice` changes, but — mirroring
+`OutputDeviceCatalog`'s device-list listener's `shouldPublishDeviceListChange` dedup —
+only actually calls `reconcile()` when the default-output device's UID differs from the
+last notification it acted on; CoreAudio firing the property listener without the routed-
+to device itself changing is a no-op. For the catalog device whose
 UID is in `enabledDeviceUIDs`, the master switch is on, AND its UID equals
 `currentDefaultOutputDeviceUID`, with no running engine → create
 `EQDeviceEngine(deviceID:deviceUID:deviceName:)`, start it. Any running engine whose

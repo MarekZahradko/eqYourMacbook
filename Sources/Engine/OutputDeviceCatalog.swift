@@ -1,8 +1,9 @@
-// Enumerates output devices and reports hot-plug changes. Replaces the old
-// single-route DeviceWatcher now that §5 lets the user enable the EQ on any number of
-// output devices simultaneously, not just the current system default.
-// OutputDeviceCatalog never starts/stops anything — it only reports which devices
-// exist; OutputDeviceEQCoordinator decides policy.
+// Enumerates output devices and reports hot-plug changes. The user checks exactly one
+// device to EQ (mutual exclusion in the App layer); that device's engine only actually
+// runs while it's also the OS's current default-output route (CONTRACT.md's
+// "Reconciliation"). OutputDeviceCatalog never starts/stops anything or decides
+// routing — it only reports which devices exist; OutputDeviceEQCoordinator decides
+// policy.
 
 import CoreAudio
 import Foundation
@@ -18,6 +19,19 @@ struct OutputDeviceInfo: Identifiable, Equatable {
 
     private(set) var devices: [OutputDeviceInfo] = []
     var onDevicesChanged: (([OutputDeviceInfo]) -> Void)?   // fired on the main actor
+
+    /// Test-only injection hook: lets a test populate `devices` with a synthetic list
+    /// WITHOUT ever calling `start()` (which would register a live
+    /// `kAudioHardwarePropertyDevices` listener and run `enumerate()` against real
+    /// CoreAudio). `devices`'s setter is `private` (matching docs/CONTRACT.md's
+    /// `private(set) var devices`), so this narrow hook mirrors
+    /// OutputDeviceEQCoordinator's `setDeviceRows(_:)`/`setEnabledDeviceUIDs(_:)` pattern
+    /// (same-file-extension-only widening, not a public setter). Production code never
+    /// calls this — `start()`/`handleDevicesChanged()` assign `devices` directly since
+    /// they're declared in this same file.
+    func setDevices(_ devices: [OutputDeviceInfo]) {
+        self.devices = devices
+    }
 
     private var listenerBlock: AudioObjectPropertyListenerBlock?
     private var address = AudioObjectPropertyAddress(

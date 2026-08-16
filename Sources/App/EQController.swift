@@ -7,9 +7,10 @@ import os.log
 
 // MARK: - DisplayStatus
 
-/// N devices can run at once, so there's no single "route" to derive standby/active
-/// from. Per-device running state lives in DeviceRowView; this is the aggregate
-/// master-switch/health line the footer shows.
+/// At most one engine ever runs — the enabled device that's ALSO the OS's current
+/// default-output route (docs/CONTRACT.md's Reconciliation/Engage-policy) — so this
+/// is only the aggregate master-switch/health line the footer shows; per-device
+/// running state lives in DeviceRowView instead.
 enum DisplayStatus: Equatable {
     case active                        // master enabled (per-device rows show detail)
     case disabled
@@ -169,10 +170,9 @@ final class EQController: ObservableObject {
     // MARK: Persistence helpers
 
     // Debounces the UserDefaults write: `bands`'s didSet fires at slider-drag rate
-    // (30-60+/sec); only the value at rest needs to hit disk, so cancel-and-reschedule
-    // collapses a whole drag gesture into one write shortly after the user stops.
-    // Residual risk (accepted): a kill within this window after the last change loses
-    // it — there's no applicationWillTerminate hook to flush on quit.
+    // (30-60+/sec), so cancel-and-reschedule collapses a whole drag into one write.
+    // Accepted risk: a kill within this window loses the last change (no
+    // applicationWillTerminate hook to flush on quit).
     private static let persistBandsDebounceInterval: TimeInterval = 0.4
     private var persistBandsWorkItem: DispatchWorkItem?
 

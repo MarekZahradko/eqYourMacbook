@@ -10,7 +10,11 @@
 // seconds of wall-clock wait to observe 2 ticks, for little additional coverage: the
 // escalation POLICY is fully covered here by fast pure-function tests, and the remaining
 // timer-wiring in startWatchdog()/stopWatchdog() is thin, low-risk plumbing not worth a
-// slow/flaky integration test.
+// slow/flaky integration test. See EQDeviceEngineWatchdogIntegrationTests.swift for
+// coverage of what this policy actually DOES on a real engine/CoreAudio-double stack
+// (rebuild()'s reentrancy guard, the real watchdogTick() driving a real rebuild(), and the
+// unconditional post-rebuild .running re-notification) — driven directly via watchdogTick()
+// rather than the raw timer, so it stays fast and deterministic too.
 import Testing
 @testable import eqYourMacbook
 

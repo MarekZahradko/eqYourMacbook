@@ -122,7 +122,7 @@ extension EQDeviceEngine {
             lastWatchdogCounter = 0
             consecutiveSilentChecks = 0
             didRebuildForSilence = false
-            rtContext?.maxAbsInput = 0
+            rtContext?.resetMaxAbsInputAssumingStopped()
         } catch {
             failStart(error)
             return

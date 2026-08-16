@@ -45,30 +45,25 @@ enum EQCoefficients {
     /// `channels` defaults to the fixed engine channel count; tests build a single
     /// channel to compare against a scalar reference.
     //
-    // Multi-entry memoization, keyed per distinct device configuration
-    // (bands/mutedFlags/sampleRate/channels/masterGainDB). N devices commonly share
-    // bands/masterGainDB but can differ in sampleRate — a single-slot cache thrashed to
-    // near-0% hit rate with 2+ devices at different sample rates, since each device's
-    // coalesced update tick evicted the other's entry. Capacity is a small bound
-    // (`cacheCapacity`) with simple LRU eviction; the app's own soft cap is 4
-    // simultaneous devices (OutputDeviceEQCoordinator.maxSimultaneousDevices), so a
-    // handful of entries is enough.
+    // Multi-entry memoization keyed per distinct device configuration
+    // (bands/mutedFlags/sampleRate/channels/masterGainDB). Only one device engine ever
+    // runs at a time (OutputDeviceEQCoordinator.maxSimultaneousDevices == 1 — see
+    // CONTRACT.md), but a sampleRate change still evicts a single-slot cache on every
+    // coalesced update tick. `cacheCapacity` with LRU eviction comfortably covers that
+    // churn plus test-suite reuse across sample rates.
     //
-    // Thread-safety: `sectionCoefficients` is called only from the main-actor
-    // coalescing path (EQDeviceEngine+LiveUpdate.swift's flushPendingUpdate,
-    // EQDeviceEngine+RTState.swift's installBiquadSetup) — NEVER from the RT IOProc
-    // callback — so a lock here is not an RT-safety violation. It IS still needed:
-    // Tests/eqYourMacbookTests/EngineCoefficientTests.swift's `@Test` functions run
-    // concurrently by default (Swift Testing parallelizes within a non-`.serialized`
-    // `@Suite`) and were mutating this single static cache with no synchronization at
-    // all — a real concurrent read/write race on the cache's backing Arrays (COW,
-    // refcounted), independent of the per-device thrash problem above. A plain `NSLock`
-    // around the small linear scan is simplest here (an array, not a Dictionary:
-    // `EQBand` isn't `Hashable`, and a ≤`cacheCapacity`-entry scan is cheap enough that
-    // keying by a hash isn't worth it).
+    // Thread-safety: `sectionCoefficients` runs only on the main-actor coalescing path
+    // (EQDeviceEngine+LiveUpdate.swift's flushPendingUpdate, EQDeviceEngine+RTState.swift's
+    // installBiquadSetup), never the RT IOProc callback, so the lock isn't an RT-safety
+    // issue. It's still needed: Swift Testing parallelizes `@Test` functions within a
+    // non-`.serialized` `@Suite` by default, giving concurrent read/write access to this
+    // single static cache's backing Arrays (COW, refcounted) with no synchronization
+    // otherwise. A plain `NSLock` around the small linear scan is simplest (an array, not
+    // a Dictionary: `EQBand` isn't `Hashable`, and a ≤`cacheCapacity`-entry scan is cheap
+    // enough that hashing isn't worth it).
     //
-    // EQBand.== ignores `muted`/`id` (preset value identity, not runtime state), but
-    // muted affects this function's output, so the cache key tracks it separately.
+    // EQBand.== ignores `muted`/`id` (preset identity, not runtime state), but muted
+    // affects this function's output, so the cache key tracks it separately.
     private static let cacheCapacity = 8
 
     private final class CoefficientCache: @unchecked Sendable {

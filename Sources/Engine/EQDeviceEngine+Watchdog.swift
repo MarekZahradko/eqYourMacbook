@@ -24,17 +24,26 @@ extension EQDeviceEngine {
         watchdogTimer = nil
     }
 
-    private func watchdogTick() {
+    // Not private: driven directly by EQDeviceEngineWatchdogIntegrationTests.swift so the
+    // escalation policy's actual effect on a real engine/CoreAudio-double stack (rebuild()
+    // firing, the unconditional post-rebuild .running re-notification) can be tested
+    // deterministically without waiting on the real 5 s DispatchSourceTimer — same
+    // "documented, deliberate test seam" convention as rebuild()'s own "Not private:
+    // called from EQDeviceEngine+SleepWake.swift's wake handler" comment below. Production
+    // call site is still only startWatchdog()'s timer handler above.
+    func watchdogTick() {
         guard case .running = state, let context = rtContext else { return }
         // rtAcquireFence() pairs with the RT thread's rtReleaseFence() after writing
-        // callbackCounter/maxAbsInput (EQIOProcFactory.swift) — guarantees this read
-        // observes the RT thread's latest writes rather than a stale cached value.
+        // callbackCounter (EQIOProcFactory.swift) — guarantees this read observes the
+        // RT thread's latest write rather than a stale cached value.
         rtAcquireFence()
         let counter = context.callbackCounter
-        let maxAbs = context.maxAbsInput
-        context.maxAbsInput = 0   // read-then-reset so each tick sees the max since the last
-        // Publish the reset in order before the RT thread's next telemetry write.
-        rtReleaseFence()
+        // maxAbsInput is a separate, CAS-based exchange (not fence-bracketed): it has
+        // two genuine concurrent writers (this reset + the RT thread's running-max
+        // update), so a plain read-then-store here could silently drop an RT update
+        // landing in between, or silently revive a pre-reset sample into this tick's
+        // window — see EQDeviceRTContext.swift's maxAbsInputBits doc comment.
+        let maxAbs = context.exchangeMaxAbsInputWithZero()
         let advancing = counter != lastWatchdogCounter
         lastWatchdogCounter = counter
 

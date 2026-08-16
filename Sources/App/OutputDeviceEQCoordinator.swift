@@ -1,6 +1,17 @@
 // Owns the lifecycle of per-device EQDeviceEngine instances: which devices exist
 // (OutputDeviceCatalog), which the user has enabled (enabledDeviceUIDs, persisted),
 // and which are actually running (engines). EQController only renders/forwards UI intent.
+//
+// Split across files (extensions can't hold stored properties, so all state lives
+// here): lifecycle (start/stop) in +Lifecycle.swift; UI-intent forwarding in
+// +DeviceIntent.swift; enabledDeviceUIDs load/save in +Persistence.swift; reconcile()
+// and the route listener in +Reconciliation.swift; model types, the protocol seam,
+// stored state, init, and EQDeviceEngineDelegate conformance here. Properties touched
+// only from extension files are `internal` rather than `private`, each commented with
+// which file(s) need the access (same convention as EQDeviceEngine's file split). The
+// two properties CONTRACT.md documents as `private(set)` (`deviceRows`,
+// `enabledDeviceUIDs`) keep that declaration and expose a narrow hook method for
+// extension-file writes instead, mirroring EQDeviceEngine's `transition(to:)`.
 
 import CoreAudio
 import Foundation
@@ -42,8 +53,7 @@ struct AggregateEngineStatus: Equatable {
 
 @MainActor final class OutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
 
-    // The coordinator conforms to EQDeviceEngineDelegate and is the delegate for every
-    // EQDeviceEngine it creates, keyed by each engine's own deviceID. It collapses all
+    // Delegate for every EQDeviceEngine it creates (keyed by deviceID); collapses all
     // per-device states into one AggregateEngineStatus for EQController's status line.
     var onAggregateStatusChanged: ((AggregateEngineStatus) -> Void)?
     var onDeviceRowsChanged: (([DeviceRowViewModel]) -> Void)?
@@ -51,275 +61,103 @@ struct AggregateEngineStatus: Equatable {
     private(set) var deviceRows: [DeviceRowViewModel] = []
     private(set) var enabledDeviceUIDs: Set<String> = []
 
-    private let catalog = OutputDeviceCatalog()
-    private let enabledUIDStore = EnabledDeviceUIDStore()
-    private var engines: [AudioObjectID: EQDeviceEngine] = [:]
+    /// Hook for +Reconciliation.swift's rebuildDeviceRows() to write `deviceRows`
+    /// without widening its CONTRACT.md-mandated `private(set)` setter.
+    func setDeviceRows(_ rows: [DeviceRowViewModel]) {
+        deviceRows = rows
+    }
 
-    // Tracks which device UID macOS is currently actually routing system audio
-    // to. Reconciliation only ever starts/keeps an engine running for the
-    // enabled device when it IS this route — see reconcile()'s doc comment for why.
-    private var currentDefaultOutputDeviceUID: String?
-    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
-    private var defaultOutputAddress = AudioObjectPropertyAddress(
+    /// Hook for +DeviceIntent.swift's setDeviceEnabled() and +Persistence.swift's
+    /// loadPersistedEnabledUIDs() to write `enabledDeviceUIDs` — same reasoning as
+    /// setDeviceRows(_:) above.
+    func setEnabledDeviceUIDs(_ uids: Set<String>) {
+        enabledDeviceUIDs = uids
+    }
+
+    // Read/written from +Lifecycle/+DeviceIntent/+Persistence/+Reconciliation → internal.
+    // Not constructor-injected like enabledUIDStore/makeEngine below: tests populate it
+    // via its own `setDevices(_:)` hook (OutputDeviceCatalog.swift) instead.
+    let catalog = OutputDeviceCatalog()
+    // Touched only by +Persistence.swift → internal. Constructor-injectable (mirrors
+    // EnabledDeviceUIDStore's own `defaults:` seam) so tests can use an isolated
+    // UserDefaults suite instead of `.standard`.
+    let enabledUIDStore: EnabledDeviceUIDStore
+
+    /// Builds the `EQDeviceEngine` for a device reconcile() decided to start.
+    /// Constructor-injectable testability seam (default: real `EQDeviceEngine` backed
+    /// by `LiveCoreAudioTapService`, so every real call site is unaffected). Tests
+    /// inject a factory backed by `FakeCoreAudioTapService` to exercise reconcile()'s
+    /// start/stop glue and this file's `EQDeviceEngineDelegate` conformance without
+    /// touching live CoreAudio.
+    typealias EngineFactory = (
+        _ deviceID: AudioObjectID, _ deviceUID: String, _ deviceName: String
+    ) -> EQDeviceEngine
+    // Touched only by +Reconciliation.swift's reconcile() → internal.
+    let makeEngine: EngineFactory
+    // Touched by +DeviceIntent.swift (fan-out loops), +Lifecycle.swift (stop()), and
+    // +Reconciliation.swift (start/stop bookkeeping) → internal.
+    var engines: [AudioObjectID: EQDeviceEngine] = [:]
+
+    // The device UID macOS is currently routing system audio to. An engine only ever
+    // starts/stays running for the enabled device when it IS this route (reconcile()'s
+    // doc comment). Refreshed unconditionally by reconcile() every call; primed by
+    // +Lifecycle.swift's start() → internal.
+    var currentDefaultOutputDeviceUID: String?
+    // Last default-output UID the route listener actually acted on, so
+    // handleDefaultOutputDeviceChanged() (+Reconciliation.swift) can skip reconcile()
+    // when CoreAudio fires the notification without the route itself changing. Primed
+    // by +Lifecycle.swift's start() → internal.
+    var lastNotifiedDefaultOutputDeviceUID: String?
+    // Touched only by +Reconciliation.swift's install/removeDefaultOutputRouteListener() → internal.
+    var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    var defaultOutputAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain
     )
 
-    private var engineStates: [AudioObjectID: EngineState] = [:]
-    private var permissionSuspectedDevices: Set<AudioObjectID> = []
+    // Touched by this file's EQDeviceEngineDelegate conformance, +Lifecycle.swift
+    // (stop() clears both), and +Reconciliation.swift (read/write) → internal.
+    var engineStates: [AudioObjectID: EngineState] = [:]
+    var permissionSuspectedDevices: Set<AudioObjectID> = []
 
-    private var globallyEnabled = true
-    private var currentBands: [EQBand] = []
-    private var currentBypass = false
-    private var currentGainStagingEnabled = true
+    /// Suppresses rebuildDeviceRows()/publishAggregateStatus() while reconcile()
+    /// (+Reconciliation.swift) is mid-pass: engine.stop()/start() can synchronously
+    /// re-enter this file's EQDeviceEngineDelegate conformance (e.g. a start failing
+    /// synchronously fires didChangeState before reconcile()'s loop finishes), and any
+    /// such mid-pass callback is just a preview of the state reconcile() unconditionally
+    /// republishes once at its own end. Set/cleared only by reconcile() → internal.
+    var isReconcilingEngines = false
+
+    // Touched by +DeviceIntent.swift (setters) and +Reconciliation.swift (reconcile()
+    // reads them when starting/updating engines) → internal.
+    var globallyEnabled = true
+    var currentBands: [EQBand] = []
+    var currentBypass = false
+    var currentGainStagingEnabled = true
 
     // Memoizes anyOtherProcessOutputtingAudio(excluding:) across engines' independent,
-    // unsynchronized 5 s watchdog timers — every engine asks the same CoreAudio question,
-    // so re-enumerating per engine per tick is waste. TTL is short (1 s) so it only
-    // dedupes calls landing within the same jitter window, without blurring the
-    // watchdog's own 5 s/2-check detection latency.
+    // unsynchronized 5 s watchdog timers, since every engine asks the same CoreAudio
+    // question. TTL is short (1 s) so it only dedupes calls in the same jitter window,
+    // without blurring the watchdog's own 5 s/2-check detection latency.
     private static let othersOutputtingCacheTTL: TimeInterval = 1.0
     private var cachedOthersOutputting: Bool?
     private var othersOutputtingCachedAt: Date?
 
-    // Defense-in-depth only: setDeviceEnabled() and the default-output-route gating in
-    // planReconciliation already guarantee at most one engine ever runs (the process
-    // tap's mute is system-wide, not per-device — see reconcile()). This cap just bounds
-    // an unforeseen bug in that invariant, not a tunable.
-    private static let maxSimultaneousDevices = 1
+    // Defense-in-depth only, not a tunable: setDeviceEnabled() and the default-output-
+    // route gating in planReconciliation already guarantee at most one engine ever runs
+    // (the process tap's mute is system-wide, not per-device — see reconcile()).
+    static let maxSimultaneousDevices = 1
 
-    init() {}
-
-    // MARK: - Lifecycle
-
-    func start() {
-        catalog.onDevicesChanged = { [weak self] _ in
-            self?.reconcile()
-        }
-        catalog.start()
-        loadPersistedEnabledUIDs()
-
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            // Registered on DispatchQueue.main below, so this already runs on main.
-            MainActor.assumeIsolated { self?.reconcile() }
-        }
-        defaultOutputListenerBlock = block
-        AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, DispatchQueue.main, block)
-
-        reconcile()
-    }
-
-    func stop() {
-        catalog.stop()
-        if let block = defaultOutputListenerBlock {
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, DispatchQueue.main, block)
-            defaultOutputListenerBlock = nil
-        }
-        for engine in engines.values { engine.stop() }
-        engines.removeAll()
-        engineStates.removeAll()
-        permissionSuspectedDevices.removeAll()
-        rebuildDeviceRows()
-    }
-
-    // MARK: - UI intent
-
-    // Only one device can ever be EQ-enabled at a time (see reconcile()'s doc
-    // comment) — enabling a device replaces the enabled set rather than adding to it.
-    func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID) {
-        guard let device = catalog.devices.first(where: { $0.id == deviceID }) else { return }
-        if enabled {
-            enabledDeviceUIDs = [device.uid]
-        } else {
-            enabledDeviceUIDs.remove(device.uid)
-        }
-        persistEnabledUIDs()
-        reconcile()
-    }
-
-    func setGloballyEnabled(_ enabled: Bool) {
-        globallyEnabled = enabled
-        reconcile()
-    }
-
-    func updateBands(_ bands: [EQBand]) {
-        currentBands = bands
-        for engine in engines.values { engine.update(bands: bands) }
-    }
-
-    func updateBypass(_ bypassed: Bool) {
-        currentBypass = bypassed
-        for engine in engines.values { engine.isBypassed = bypassed }
-    }
-
-    func setGainStagingEnabled(_ enabled: Bool) {
-        currentGainStagingEnabled = enabled
-        for engine in engines.values { engine.gainStagingEnabled = enabled }
-    }
-
-    // MARK: - First-launch default
-
-    private func loadPersistedEnabledUIDs() {
-        if let loaded = enabledUIDStore.load() {
-            enabledDeviceUIDs = loaded
-            return
-        }
-        // First launch: seed with just the built-in speakers' UID once discovered.
-        if let builtIn = catalog.devices.first(where: \.isBuiltIn) {
-            enabledDeviceUIDs = [builtIn.uid]
-            persistEnabledUIDs()
-        }
-    }
-
-    private func persistEnabledUIDs() {
-        enabledUIDStore.save(enabledDeviceUIDs)
-    }
-
-    // MARK: - Reconciliation
-    //
-    // The process tap (`stereoGlobalTapButExcludeProcesses`) mutes audio system-wide, not
-    // per-device — CoreAudio has no per-device-scoped tap/mute mode. So an engine may
-    // ONLY run for the device the OS is currently routing default output to; running it
-    // for any other device would silence audio everywhere while nothing plays through the
-    // actually-active route. Hence only one device can ever be enabled, and "enabled" here
-    // further means "start only if also the current default output" — the app must never
-    // choose or override output routing, only ride along with it.
-    private func reconcile() {
-        // First-launch seeding needs the catalog populated; retry if still empty.
-        if enabledDeviceUIDs.isEmpty {
-            loadPersistedEnabledUIDs()
-        }
-
-        currentDefaultOutputDeviceUID = (try? getDefaultOutputDeviceID()).flatMap { defaultID in
-            catalog.devices.first(where: { $0.id == defaultID })?.uid
-        }
-
-        let plan = Self.planReconciliation(
-            catalogDevices: catalog.devices.map { (id: $0.id, uid: $0.uid) },
-            runningDeviceIDs: Set(engines.keys),
-            runningDeviceUIDs: engines.mapValues(\.deviceUID),
-            enabledUIDs: enabledDeviceUIDs,
-            globallyEnabled: globallyEnabled,
-            defaultOutputDeviceUID: currentDefaultOutputDeviceUID,
-            maxSimultaneous: Self.maxSimultaneousDevices)
-
-        // Stop engines no longer wanted or present (replug auto-resumes: UID stays enabled).
-        for id in plan.toStop {
-            engines[id]?.stop()
-            engines.removeValue(forKey: id)
-            engineStates.removeValue(forKey: id)
-            permissionSuspectedDevices.remove(id)
-        }
-
-        // Start engines the plan selected (enabled, present, not-yet-running, within cap).
-        for id in plan.toStart {
-            guard let device = catalog.devices.first(where: { $0.id == id }) else { continue }
-            let engine = EQDeviceEngine(deviceID: device.id, deviceUID: device.uid, deviceName: device.name)
-            engine.delegate = self
-            engine.gainStagingEnabled = currentGainStagingEnabled
-            engine.isBypassed = currentBypass
-            engines[device.id] = engine
-            engineStates[device.id] = .stopped
-            engine.start(bands: currentBands)
-        }
-
-        rebuildDeviceRows()
-        publishAggregateStatus()
-    }
-
-    private func rebuildDeviceRows() {
-        deviceRows = catalog.devices.map { device in
-            let running: Bool = {
-                if case .running = engineStates[device.id] { return true }
-                return false
-            }()
-            let isChecked = enabledDeviceUIDs.contains(device.uid)
-            return DeviceRowViewModel(
-                id: device.id,
-                name: device.name,
-                isBuiltIn: device.isBuiltIn,
-                isChecked: isChecked,
-                isRunning: running,
-                isInteractable: enabledDeviceUIDs.isEmpty || isChecked)
-        }
-        onDeviceRowsChanged?(deviceRows)
-    }
-
-    private func publishAggregateStatus() {
-        let status = Self.aggregateStatus(
-            engineStates: engineStates,
-            permissionSuspectedDevices: permissionSuspectedDevices)
-        onAggregateStatusChanged?(status)
-    }
-}
-
-// MARK: - Pure decision logic (testable without CoreAudio)
-
-extension OutputDeviceEQCoordinator {
-    /// Pure: decide which device IDs to stop and which (present, enabled,
-    /// not-yet-running) device IDs to start, capped at maxSimultaneous.
-    ///
-    /// `defaultOutputDeviceUID` gates both directions — an engine only stays running
-    /// (or starts) for the device the OS is CURRENTLY routing default output to. Not an
-    /// optimization: running the engine's system-wide mute for a non-active-route device
-    /// would silence audio everywhere while nothing plays through the device in use.
-    nonisolated static func planReconciliation(
-        catalogDevices: [(id: AudioObjectID, uid: String)],
-        runningDeviceIDs: Set<AudioObjectID>,
-        runningDeviceUIDs: [AudioObjectID: String],
-        enabledUIDs: Set<String>,
-        globallyEnabled: Bool,
-        defaultOutputDeviceUID: String?,
-        maxSimultaneous: Int
-    ) -> (toStop: [AudioObjectID], toStart: [AudioObjectID]) {
-        // Keyed by id so a reused AudioObjectID with a different UID counts as "gone", not "still present".
-        let catalogUIDByID = Dictionary(uniqueKeysWithValues: catalogDevices.map { ($0.id, $0.uid) })
-
-        var toStop: [AudioObjectID] = []
-        for id in runningDeviceIDs {
-            let uid = runningDeviceUIDs[id]
-            let isActiveRoute = uid != nil && uid == defaultOutputDeviceUID
-            let stillWanted = globallyEnabled && (uid.map(enabledUIDs.contains) ?? false) && isActiveRoute
-            let stillPresent = catalogUIDByID[id] != nil && catalogUIDByID[id] == uid
-            if !stillPresent || !stillWanted {
-                toStop.append(id)
-            }
-        }
-
-        var toStart: [AudioObjectID] = []
-        if globallyEnabled {
-            let remainingRunningCount = runningDeviceIDs.subtracting(toStop).count
-            for device in catalogDevices {
-                guard enabledUIDs.contains(device.uid) else { continue }
-                guard device.uid == defaultOutputDeviceUID else { continue }
-                guard !runningDeviceIDs.contains(device.id) else { continue }
-                guard remainingRunningCount + toStart.count < maxSimultaneous else { break }
-                toStart.append(device.id)
-            }
-        }
-
-        return (toStop, toStart)
-    }
-
-    /// Pure: collapse per-device engine states + permission-suspicion set into
-    /// AggregateEngineStatus.
-    nonisolated static func aggregateStatus(
-        engineStates: [AudioObjectID: EngineState],
-        permissionSuspectedDevices: Set<AudioObjectID>
-    ) -> AggregateEngineStatus {
-        let anyRunning = engineStates.values.contains { if case .running = $0 { return true }; return false }
-        // Sorted by deviceID for a deterministic pick when multiple devices fail at once.
-        let errorMessage = engineStates.sorted { $0.key < $1.key }.compactMap { _, state -> String? in
-            if case .failed(let message) = state { return message }
-            return nil
-        }.first
-        return AggregateEngineStatus(
-            anyRunning: anyRunning,
-            permissionNeeded: !permissionSuspectedDevices.isEmpty,
-            errorMessage: errorMessage)
+    /// Both parameters default to exact production behavior, so every real call site —
+    /// `EQController.init`'s `OutputDeviceEQCoordinator()` included — is unaffected.
+    /// Only tests pass non-default values (OutputDeviceEQCoordinatorIntegrationTests.swift).
+    init(enabledUIDStore: EnabledDeviceUIDStore = EnabledDeviceUIDStore(),
+         engineFactory: @escaping EngineFactory = { deviceID, deviceUID, deviceName in
+             EQDeviceEngine(deviceID: deviceID, deviceUID: deviceUID, deviceName: deviceName)
+         }) {
+        self.enabledUIDStore = enabledUIDStore
+        self.makeEngine = engineFactory
     }
 }
 
@@ -329,12 +167,14 @@ extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
     func engine(_ engine: EQDeviceEngine, didChangeState state: EngineState) {
         engineStates[engine.deviceID] = state
         if case .running = state { permissionSuspectedDevices.remove(engine.deviceID) }
+        guard !isReconcilingEngines else { return }
         rebuildDeviceRows()
         publishAggregateStatus()
     }
 
     func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine) {
         permissionSuspectedDevices.insert(engine.deviceID)
+        guard !isReconcilingEngines else { return }
         publishAggregateStatus()
     }
 
@@ -344,10 +184,9 @@ extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
            now.timeIntervalSince(othersOutputtingCachedAt) < Self.othersOutputtingCacheTTL {
             return cachedOthersOutputting
         }
-        // Module-qualified: the protocol requirement below has the same base name as
-        // the free function in CoreAudioHelpers.swift, and an unqualified call here
-        // would resolve to `self` (infinite recursion) since member lookup shadows
-        // top-level functions of the same name.
+        // Module-qualified: an unqualified call would resolve to this same-named
+        // protocol method (infinite recursion) — member lookup shadows the top-level
+        // free function in CoreAudioHelpers.swift.
         let result = eqYourMacbook.anyOtherProcessOutputtingAudio(excluding: processObjectID)
         cachedOthersOutputting = result
         othersOutputtingCachedAt = now

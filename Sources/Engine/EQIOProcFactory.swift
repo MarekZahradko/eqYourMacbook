@@ -89,11 +89,14 @@ func makeIOBlock(context: EQDeviceRTContext) -> AudioDeviceIOBlock {
         if probeCount > 0 {
             vDSP_maxmgv(firstIn.assumingMemoryBound(to: Float.self), 1, &maxAbs, vDSP_Length(probeCount))
         }
-        if maxAbs > context.maxAbsInput { context.maxAbsInput = maxAbs }
+        // CAS-based (OSAtomicCompareAndSwap32Barrier, self-fencing) — maxAbsInput has
+        // two genuine concurrent writers (this RT thread + the watchdog's reset), see
+        // EQDeviceRTContext.swift's doc comment on maxAbsInputBits.
+        context.rtUpdateMaxAbsInput(maxAbs)
         context.callbackCounter = context.callbackCounter &+ 1
-        // Publish both telemetry writes above so the main-actor watchdog (which
-        // brackets its read with rtAcquireFence(), EQDeviceEngine+Watchdog.swift)
-        // observes them in order rather than relying on plain-field visibility.
+        // Publish the counter write above so the main-actor watchdog (which brackets
+        // its read with rtAcquireFence(), EQDeviceEngine+Watchdog.swift) observes it
+        // in order rather than relying on plain-field visibility.
         rtReleaseFence()
 
         // Build channel pointer arrays for input and output (pre-allocated scratch).

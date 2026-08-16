@@ -42,10 +42,12 @@ enum EngineState: Equatable {
 // (see EQDeviceRTContext.swift).
 //
 // NOTE: the tap is a `stereoGlobalTapButExcludeProcesses` GLOBAL tap — it captures ALL
-// system audio (minus this app's own process), not audio specific to this device. So with
-// N devices enabled, N taps all see the same source signal, each independently EQ'd and
-// routed to its own aggregate/IOProc. Intentional: the product is "apply this app's EQ to
-// this output," not per-device source routing.
+// system audio (minus this app's own process), not audio specific to this device. This is
+// WHY at most one engine may ever run at once (docs/CONTRACT.md's IMPORTANT note):
+// there's no device-scoped tap/mute mode, so a second concurrent tap would mute
+// audio system-wide while nothing plays through the one device actually routed to.
+// Intentional scope: the product is "apply this app's EQ to the current output," not
+// per-device source routing.
 //
 // Split across files: stored state, init, stop()/teardown here; start-up in
 // EQDeviceEngine+Lifecycle.swift; live coefficient updates/coalescing/bypass in
@@ -83,6 +85,13 @@ enum EngineState: Equatable {
 
     // Touched by EQDeviceEngine+Lifecycle.swift (performStart/finishStart) → internal.
     let tapService: CoreAudioTapServicing
+
+    // Where the sleep/wake observer (EQDeviceEngine+SleepWake.swift) listens for
+    // NSWorkspace.didWakeNotification. Defaults to the real, process-global
+    // NSWorkspace.shared.notificationCenter in production; tests inject a private
+    // NotificationCenter() instance so posting a synthetic wake notification can't
+    // spuriously wake an unrelated engine in another concurrently-running test suite.
+    let wakeNotificationCenter: NotificationCenter
 
     // Core Audio handles owned by the engine. Set/read from
     // EQDeviceEngine+Lifecycle.swift (performStart/finishStart) and from
@@ -150,11 +159,13 @@ enum EngineState: Equatable {
     var wakeObserver: NSObjectProtocol?
 
     init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
-         tapService: CoreAudioTapServicing = LiveCoreAudioTapService()) {
+         tapService: CoreAudioTapServicing = LiveCoreAudioTapService(),
+         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
         self.deviceID = deviceID
         self.deviceUID = deviceUID
         self.deviceName = deviceName
         self.tapService = tapService
+        self.wakeNotificationCenter = wakeNotificationCenter
     }
 
     deinit {

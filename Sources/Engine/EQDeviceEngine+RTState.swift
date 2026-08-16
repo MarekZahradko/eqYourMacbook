@@ -70,7 +70,7 @@ extension EQDeviceEngine {
         releaseRTScratch(context)
         context.bypass = 0
         context.callbackCounter = 0
-        context.maxAbsInput = 0
+        context.resetMaxAbsInputAssumingStopped()
         rtContext = nil
     }
 }
