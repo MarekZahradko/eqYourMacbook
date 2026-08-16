@@ -105,7 +105,7 @@ private final class FakeOutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
         let (controller, fake, _) = makeController()
         defer { cleanUp() }
 
-        let rows = [DeviceRowViewModel(id: 1, name: "Built-in", isBuiltIn: true, isChecked: true, isRunning: true)]
+        let rows = [DeviceRowViewModel(id: 1, name: "Built-in", isBuiltIn: true, isChecked: true, isRunning: true, isInteractable: true)]
         fake.onDeviceRowsChanged?(rows)
         #expect(controller.deviceRows == rows)
     }

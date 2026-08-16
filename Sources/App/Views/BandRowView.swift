@@ -29,7 +29,7 @@ struct BandRowView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 92)
+                .frame(width: 108)
                 .labelsHidden()
                 .onChange(of: band.filterType) { _, newType in
                     if FilterType.gainless.contains(newType) {

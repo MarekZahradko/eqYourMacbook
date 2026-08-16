@@ -104,10 +104,14 @@ Without these two also going through the seam, a test double could never reach `
 `LiveCoreAudioTapService` is the default, real implementation; production call sites never
 pass anything else.
 
-IMPORTANT (open risk, §5): a `stereoGlobalTapButExcludeProcesses` tap captures ALL
-system audio (minus this app's own process). N enabled devices → N taps, all seeing
-the SAME source signal, each independently EQ'd and routed to its own device — this is
-intentional ("apply this app's EQ to this output"), not per-device source routing.
+IMPORTANT (resolved, was open risk in §5): a `stereoGlobalTapButExcludeProcesses` tap
+mutes captured processes' audio SYSTEM-WIDE, not per-device — CoreAudio has no
+device-scoped tap/mute mode. Running more than one engine at once (or running an
+engine for a device that isn't the OS's current default-output route) would silence
+audio everywhere while nothing plays through the actually-active device. This
+invalidates the earlier "N enabled devices → N simultaneous taps" design: at most one
+engine may ever run, for the one device that is BOTH user-enabled AND the current
+default-output route. See "Engage policy" below for the enforced invariant.
 
 Engine semantics (internal, not negotiable):
 - Engine NEVER decides policy (when to run) — `OutputDeviceEQCoordinator` does.
@@ -164,8 +168,9 @@ struct DeviceRowViewModel: Identifiable, Equatable {
     let id: AudioObjectID
     let name: String
     let isBuiltIn: Bool
-    var isChecked: Bool     // user intent (persisted via enabledDeviceUIDs)
-    var isRunning: Bool     // engine.state == .running right now
+    var isChecked: Bool        // user intent (persisted via enabledDeviceUIDs)
+    var isRunning: Bool        // engine.state == .running right now
+    var isInteractable: Bool   // false while a DIFFERENT device is checked (mutual exclusion)
 }
 
 struct AggregateEngineStatus: Equatable {
@@ -213,15 +218,22 @@ flags and collapses them into one `AggregateEngineStatus`, published via
 `deviceRows` for the per-device checkbox list — it does not implement the delegate
 protocol itself.
 
-Reconciliation (`reconcile()`, private): for each catalog device whose UID is in
-`enabledDeviceUIDs` and the master switch is on, with no running engine → create
-`EQDeviceEngine(deviceID:deviceUID:deviceName:)`, start it. For each running engine
-whose device disappeared from the catalog → stop it, remove from the running set,
-but KEEP its UID in `enabledDeviceUIDs` (replugging auto-resumes). For a device the
-user explicitly unchecked → stop it and remove its UID from `enabledDeviceUIDs`. A
-soft cap (`maxSimultaneousDevices = 4`) bounds how many engines run at once — N
-concurrent aggregate+tap+IOProc sets is architecturally supported but UNVERIFIED on
-real hardware (needs manual multi-device testing on first Mac build).
+Reconciliation (`reconcile()`, private): tracks `currentDefaultOutputDeviceUID`
+(refreshed via `getDefaultOutputDeviceID()` on every reconcile, and on every
+`kAudioHardwarePropertyDefaultOutputDevice` change — the coordinator listens for it,
+mirroring `OutputDeviceCatalog`'s device-list listener). For the catalog device whose
+UID is in `enabledDeviceUIDs`, the master switch is on, AND its UID equals
+`currentDefaultOutputDeviceUID`, with no running engine → create
+`EQDeviceEngine(deviceID:deviceUID:deviceName:)`, start it. Any running engine whose
+device is no longer BOTH enabled AND the active default-output route → stop it
+immediately (this is the enforced safety property: the app must never keep muting
+audio system-wide for a device the OS isn't actually routing to). A device that
+merely disappeared from the catalog (unplugged) keeps its UID in
+`enabledDeviceUIDs` (replugging auto-resumes); a device the user explicitly
+unchecked has its UID removed. `maxSimultaneousDevices = 1` is defense-in-depth,
+not a tunable — `setDeviceEnabled` and the route gating above already guarantee at
+most one engine ever runs, since running more than one is never safe under this
+tap model (see the process-tap note above).
 
 Persistence: `enabledDeviceUIDs` — `UserDefaults.standard`, key
 `eqym.enabledDeviceUIDs`, JSON-encoded `[String]` (UIDs, not `AudioObjectID`s, since
@@ -255,13 +267,24 @@ enum DisplayStatus: Equatable {
 }
 ```
 
-Engage policy: there is no single "route" anymore (any number of devices can run
-simultaneously) — engagement is per-device, driven by each `DeviceRowView` checkbox
-and reconciled by `OutputDeviceEQCoordinator`. `isEnabled` is the master kill switch:
-`false` stops every running engine regardless of checkbox state; `true` reconciles
-per checkbox state. `DisplayStatus.active` means only "master switch is on" — it does
-NOT imply every checked device is currently running (see `deviceRows[].isRunning` for
-that, and `EQController.statusDetail` for the human-readable running count).
+Engage policy: exactly one device may be checked at a time — `setDeviceEnabled(true:)`
+replaces `enabledDeviceUIDs` rather than inserting into it, and `DeviceRowView`
+disables every other row (`isInteractable == false`) while one is checked, so the UI
+enforces the same invariant it renders. The checked device's engine only actually
+runs when that device is ALSO the OS's current default-output route (see
+`OutputDeviceEQCoordinator`'s "Reconciliation" above) — checking a device the system
+isn't currently routing to is valid and expected (e.g. pre-selecting headphones
+before plugging them in); the row shows "not yet running" (`isRunning == false`)
+until macOS actually routes to it, at which point EQ engages automatically. This
+gating is INVISIBLE to device selection: the user can always see and check any
+listed device regardless of what's currently the active route — only whether the
+audio stack actively processes it depends on the route. The app never selects or
+overrides which device macOS treats as its output. `isEnabled` is the master kill
+switch: `false` stops the running engine (if any) regardless of checkbox state;
+`true` reconciles per checkbox + route state. `DisplayStatus.active` means only
+"master switch is on" — it does NOT imply the checked device is currently running
+(see `deviceRows[].isRunning` for that, and `EQController.statusDetail` for the
+human-readable running count, which is now always 0 or 1).
 
 Persistence: `UserDefaults.standard`, keys prefixed `eqym.` (`eqym.bands`,
 `eqym.isEnabled`, `eqym.customPresets`), JSON-encoded via Codable. Band count

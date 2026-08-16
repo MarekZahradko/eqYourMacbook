@@ -11,6 +11,10 @@ struct DeviceRowViewModel: Identifiable, Equatable {
     let isBuiltIn: Bool
     var isChecked: Bool
     var isRunning: Bool
+    // Only one device may be enabled at a time (the process-tap's mute is
+    // system-wide, not device-scoped — see reconcile()'s doc comment), so every
+    // other row is non-interactive while one is checked.
+    var isInteractable: Bool
 }
 
 /// Aggregate view of every running engine's health, for EQController's DisplayStatus.
@@ -51,6 +55,17 @@ struct AggregateEngineStatus: Equatable {
     private let enabledUIDStore = EnabledDeviceUIDStore()
     private var engines: [AudioObjectID: EQDeviceEngine] = [:]
 
+    // Tracks which device UID macOS is currently actually routing system audio
+    // to. Reconciliation only ever starts/keeps an engine running for the
+    // enabled device when it IS this route — see reconcile()'s doc comment for why.
+    private var currentDefaultOutputDeviceUID: String?
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultOutputAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
     private var engineStates: [AudioObjectID: EngineState] = [:]
     private var permissionSuspectedDevices: Set<AudioObjectID> = []
 
@@ -71,10 +86,12 @@ struct AggregateEngineStatus: Equatable {
     private var cachedOthersOutputting: Bool?
     private var othersOutputtingCachedAt: Date?
 
-    // Soft cap on simultaneously enabled devices: N concurrent aggregate+tap+IOProc
-    // sets is unverified on real hardware. Keeps a mistaken "enable everything" click
-    // from spawning unbounded taps. Raise once multi-device stability is confirmed.
-    private static let maxSimultaneousDevices = 4
+    // Defense-in-depth only: setDeviceEnabled() and the default-output-route gating
+    // in planReconciliation already guarantee at most one engine ever runs (the
+    // process tap's mute is system-wide, not per-device — see reconcile()'s doc
+    // comment — so more than one running engine at a time is never safe). This cap
+    // exists purely to bound an unforeseen bug in that invariant, not as a tunable.
+    private static let maxSimultaneousDevices = 1
 
     init() {}
 
@@ -86,11 +103,25 @@ struct AggregateEngineStatus: Equatable {
         }
         catalog.start()
         loadPersistedEnabledUIDs()
+
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            // Registered on DispatchQueue.main below, so this already runs on main.
+            MainActor.assumeIsolated { self?.reconcile() }
+        }
+        defaultOutputListenerBlock = block
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, DispatchQueue.main, block)
+
         reconcile()
     }
 
     func stop() {
         catalog.stop()
+        if let block = defaultOutputListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, DispatchQueue.main, block)
+            defaultOutputListenerBlock = nil
+        }
         for engine in engines.values { engine.stop() }
         engines.removeAll()
         engineStates.removeAll()
@@ -100,10 +131,12 @@ struct AggregateEngineStatus: Equatable {
 
     // MARK: - UI intent
 
+    // Only one device can ever be EQ-enabled at a time (see reconcile()'s doc
+    // comment) — enabling a device replaces the enabled set rather than adding to it.
     func setDeviceEnabled(_ enabled: Bool, deviceID: AudioObjectID) {
         guard let device = catalog.devices.first(where: { $0.id == deviceID }) else { return }
         if enabled {
-            enabledDeviceUIDs.insert(device.uid)
+            enabledDeviceUIDs = [device.uid]
         } else {
             enabledDeviceUIDs.remove(device.uid)
         }
@@ -151,12 +184,23 @@ struct AggregateEngineStatus: Equatable {
 
     // MARK: - Reconciliation
     //
-    // Open risk: whether N concurrent aggregate-device + tap + IOProc sets are stable
-    // on real hardware is unverified — needs manual multi-device testing on first build.
+    // The process tap (`stereoGlobalTapButExcludeProcesses`, see EQDeviceEngine+Lifecycle)
+    // mutes a process's audio system-wide, not just on the tapped device — CoreAudio
+    // has no per-device-scoped tap/mute mode. So an engine may ONLY run for the
+    // device the OS is actually routing default output to right now: running it for
+    // any other device would silence audio everywhere while nothing plays through
+    // the actually-active route. This is why only one device can ever be enabled
+    // (setDeviceEnabled enforces that) and why "enabled" here further means "start
+    // only if this device is also the current default output" — the app must never
+    // choose or override the user's/macOS's output routing, only ride along with it.
     private func reconcile() {
         // First-launch seeding needs the catalog populated; retry if still empty.
         if enabledDeviceUIDs.isEmpty {
             loadPersistedEnabledUIDs()
+        }
+
+        currentDefaultOutputDeviceUID = (try? getDefaultOutputDeviceID()).flatMap { defaultID in
+            catalog.devices.first(where: { $0.id == defaultID })?.uid
         }
 
         let plan = Self.planReconciliation(
@@ -165,6 +209,7 @@ struct AggregateEngineStatus: Equatable {
             runningDeviceUIDs: engines.mapValues(\.deviceUID),
             enabledUIDs: enabledDeviceUIDs,
             globallyEnabled: globallyEnabled,
+            defaultOutputDeviceUID: currentDefaultOutputDeviceUID,
             maxSimultaneous: Self.maxSimultaneousDevices)
 
         // Stop engines no longer wanted or present (replug auto-resumes: UID stays enabled).
@@ -197,12 +242,14 @@ struct AggregateEngineStatus: Equatable {
                 if case .running = engineStates[device.id] { return true }
                 return false
             }()
+            let isChecked = enabledDeviceUIDs.contains(device.uid)
             return DeviceRowViewModel(
                 id: device.id,
                 name: device.name,
                 isBuiltIn: device.isBuiltIn,
-                isChecked: enabledDeviceUIDs.contains(device.uid),
-                isRunning: running)
+                isChecked: isChecked,
+                isRunning: running,
+                isInteractable: enabledDeviceUIDs.isEmpty || isChecked)
         }
         onDeviceRowsChanged?(deviceRows)
     }
@@ -220,12 +267,21 @@ struct AggregateEngineStatus: Equatable {
 extension OutputDeviceEQCoordinator {
     /// Pure: decide which device IDs to stop and which (present, enabled,
     /// not-yet-running) device IDs to start, capped at maxSimultaneous.
+    ///
+    /// `defaultOutputDeviceUID` gates both directions: an engine only stays
+    /// running (or gets started) for the device the OS is CURRENTLY routing
+    /// default output to. This is not an optimization — running the engine
+    /// (and its system-wide mute) for a device that isn't the active route
+    /// would silence audio everywhere while nothing plays through the device
+    /// actually in use. The app must only ride along with routing, never
+    /// choose or override it.
     nonisolated static func planReconciliation(
         catalogDevices: [(id: AudioObjectID, uid: String)],
         runningDeviceIDs: Set<AudioObjectID>,
         runningDeviceUIDs: [AudioObjectID: String],
         enabledUIDs: Set<String>,
         globallyEnabled: Bool,
+        defaultOutputDeviceUID: String?,
         maxSimultaneous: Int
     ) -> (toStop: [AudioObjectID], toStart: [AudioObjectID]) {
         // Keyed by id so a reused AudioObjectID with a different UID counts as "gone", not "still present".
@@ -234,7 +290,8 @@ extension OutputDeviceEQCoordinator {
         var toStop: [AudioObjectID] = []
         for id in runningDeviceIDs {
             let uid = runningDeviceUIDs[id]
-            let stillWanted = globallyEnabled && (uid.map(enabledUIDs.contains) ?? false)
+            let isActiveRoute = uid != nil && uid == defaultOutputDeviceUID
+            let stillWanted = globallyEnabled && (uid.map(enabledUIDs.contains) ?? false) && isActiveRoute
             let stillPresent = catalogUIDByID[id] != nil && catalogUIDByID[id] == uid
             if !stillPresent || !stillWanted {
                 toStop.append(id)
@@ -246,6 +303,7 @@ extension OutputDeviceEQCoordinator {
             let remainingRunningCount = runningDeviceIDs.subtracting(toStop).count
             for device in catalogDevices {
                 guard enabledUIDs.contains(device.uid) else { continue }
+                guard device.uid == defaultOutputDeviceUID else { continue }
                 guard !runningDeviceIDs.contains(device.id) else { continue }
                 guard remainingRunningCount + toStart.count < maxSimultaneous else { break }
                 toStart.append(device.id)

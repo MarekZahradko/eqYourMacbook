@@ -1,11 +1,14 @@
 # eqYourMacbook — project instructions
 
 Tiny menu-bar system-wide EQ, built on the driverless macOS Core Audio
-process-tap API (no HAL driver, no .pkg, no root). Supports EQ'ing any number of
-output devices simultaneously (per-device checkboxes; built-in speakers is the
-default-enabled device on first launch) — see `docs/CONTRACT.md` and PLAN.md §1's
-multi-device blockquote. Personal-use app, owner: Zdeněk (communicates in Czech;
-all code, comments, and docs stay in English).
+process-tap API (no HAL driver, no .pkg, no root). Lets the user pick which
+single output device to EQ from any available output device (checkboxes,
+mutually exclusive; built-in speakers is the default-enabled device on first
+launch); that device's EQ engine only actually runs while it's also the OS's
+current default-output route — the app never selects or overrides output
+routing itself — see `docs/CONTRACT.md` and PLAN.md §1's multi-device
+blockquote. Personal-use app, owner: Zdeněk (communicates in Czech; all code,
+comments, and docs stay in English).
 
 ## Current state (updated 2026-08-15)
 

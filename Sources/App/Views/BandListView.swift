@@ -39,6 +39,7 @@ struct BandListView: View {
                 }
             }
             .frame(height: listHeight)
+            .scrollIndicators(controller.bands.count > Self.maxVisibleRows ? .automatic : .never)
 
             HStack(spacing: 8) {
                 Button(action: addBand) {

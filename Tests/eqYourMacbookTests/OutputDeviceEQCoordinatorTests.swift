@@ -3,29 +3,79 @@ import Testing
 @testable import eqYourMacbook
 
 /// Tests for OutputDeviceEQCoordinator's pure decision logic — planReconciliation
-/// (stop/start policy + soft cap) and aggregateStatus (per-engine-state collapse) —
-/// with zero CoreAudio involvement.
+/// (stop/start policy, default-output-route gating, soft cap) and aggregateStatus
+/// (per-engine-state collapse) — with zero CoreAudio involvement.
+///
+/// Route-gating rationale: the process tap mutes a process's audio system-wide, not
+/// per-device (CoreAudio has no device-scoped tap/mute mode), so an engine may only
+/// run for the device that is CURRENTLY the OS's default output route — running it
+/// for any other device would silence audio everywhere while nothing plays through
+/// the actually-active device. `setDeviceEnabled` additionally enforces that only one
+/// device is ever enabled at a time, but `planReconciliation` itself is pure and takes
+/// `enabledUIDs` as given, so several of these tests exercise multi-candidate inputs
+/// to pin down the gating logic in isolation.
 @Suite struct OutputDeviceEQCoordinatorTests {
 
-    // MARK: - planReconciliation
+    // MARK: - planReconciliation: default-route gating
 
-    @Test func fifthEnabledDeviceNotStartedWhenFourAlreadyRunning() {
-        let running: Set<AudioObjectID> = [1, 2, 3, 4]
-        let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b", 3: "c", 4: "d"]
-        let catalog: [(id: AudioObjectID, uid: String)] = [
-            (1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"),
-        ]
+    @Test func enabledDeviceNotStartedWhenItIsNotTheDefaultRoute() {
         let plan = OutputDeviceEQCoordinator.planReconciliation(
-            catalogDevices: catalog,
-            runningDeviceIDs: running,
-            runningDeviceUIDs: runningUIDs,
-            enabledUIDs: ["a", "b", "c", "d", "e"],
+            catalogDevices: [(1, "a")],
+            runningDeviceIDs: [],
+            runningDeviceUIDs: [:],
+            enabledUIDs: ["a"],
             globallyEnabled: true,
+            defaultOutputDeviceUID: "some-other-device",   // "a" is enabled but not routed to
+            maxSimultaneous: 4)
+
+        #expect(plan.toStart.isEmpty)
+        #expect(plan.toStop.isEmpty)
+    }
+
+    @Test func enabledDeviceStartsOnlyWhenItIsTheDefaultRoute() {
+        let plan = OutputDeviceEQCoordinator.planReconciliation(
+            catalogDevices: [(1, "a"), (2, "b")],
+            runningDeviceIDs: [],
+            runningDeviceUIDs: [:],
+            enabledUIDs: ["a", "b"],   // both enabled (hypothetically), only "a" is routed to
+            globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
+            maxSimultaneous: 4)
+
+        #expect(plan.toStart == [1])
+    }
+
+    /// A running, still-enabled device is stopped the moment the OS's default output
+    /// route moves to a different device — the app must never keep muting audio
+    /// system-wide on behalf of a device that isn't actually receiving it anymore.
+    @Test func runningDeviceIsStoppedWhenDefaultRouteMovesAwayEvenThoughStillEnabled() {
+        let plan = OutputDeviceEQCoordinator.planReconciliation(
+            catalogDevices: [(1, "a"), (2, "b")],
+            runningDeviceIDs: [1],
+            runningDeviceUIDs: [1: "a"],
+            enabledUIDs: ["a"],              // user never touched the checkbox
+            globallyEnabled: true,
+            defaultOutputDeviceUID: "b",     // but macOS is now routing to "b" instead
+            maxSimultaneous: 4)
+
+        #expect(plan.toStop == [1])
+        #expect(plan.toStart.isEmpty)
+    }
+
+    @Test func runningDeviceKeepsRunningWhileItRemainsTheDefaultRoute() {
+        let plan = OutputDeviceEQCoordinator.planReconciliation(
+            catalogDevices: [(1, "a")],
+            runningDeviceIDs: [1],
+            runningDeviceUIDs: [1: "a"],
+            enabledUIDs: ["a"],
+            globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 4)
 
         #expect(plan.toStop.isEmpty)
-        #expect(!plan.toStart.contains(5))
     }
+
+    // MARK: - planReconciliation: presence/enablement/master-switch
 
     @Test func runningDeviceNoLongerInCatalogIsStopped() {
         let running: Set<AudioObjectID> = [1]
@@ -36,6 +86,7 @@ import Testing
             runningDeviceUIDs: runningUIDs,
             enabledUIDs: ["a"],
             globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 4)
 
         #expect(plan.toStop == [1])
@@ -51,6 +102,7 @@ import Testing
             runningDeviceUIDs: runningUIDs,
             enabledUIDs: [],   // "a" was unchecked
             globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 4)
 
         #expect(plan.toStop == [1])
@@ -66,32 +118,11 @@ import Testing
             runningDeviceUIDs: runningUIDs,
             enabledUIDs: ["a", "b"],   // still enabled+present, but master switch is off
             globallyEnabled: false,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 4)
 
         #expect(Set(plan.toStop) == [1, 2])
         #expect(plan.toStart.isEmpty)
-    }
-
-    /// 2 already running + 3 enabled-but-not-running candidates, cap of 4: exactly 2
-    /// more should start. planReconciliation's toStart loop walks `catalogDevices` in
-    /// array order (not the unordered running-IDs Set), so which 2 win is deterministic:
-    /// the first 2 candidates in catalog order, i.e. devices 3 and 4, NOT device 5.
-    @Test func partialFillStartsExactlyEnoughToReachCapInCatalogOrder() {
-        let running: Set<AudioObjectID> = [1, 2]
-        let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b"]
-        let catalog: [(id: AudioObjectID, uid: String)] = [
-            (1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"),
-        ]
-        let plan = OutputDeviceEQCoordinator.planReconciliation(
-            catalogDevices: catalog,
-            runningDeviceIDs: running,
-            runningDeviceUIDs: runningUIDs,
-            enabledUIDs: ["a", "b", "c", "d", "e"],
-            globallyEnabled: true,
-            maxSimultaneous: 4)
-
-        #expect(plan.toStop.isEmpty)
-        #expect(plan.toStart == [3, 4])
     }
 
     /// maxSimultaneous == 0: the cap guard (`remainingRunningCount + toStart.count <
@@ -105,6 +136,7 @@ import Testing
             runningDeviceUIDs: [:],
             enabledUIDs: ["a", "b"],
             globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 0)
 
         #expect(plan.toStop.isEmpty)
@@ -121,30 +153,28 @@ import Testing
             runningDeviceUIDs: [:],
             enabledUIDs: ["a"],
             globallyEnabled: true,
+            defaultOutputDeviceUID: "a",
             maxSimultaneous: 4)
 
         #expect(plan.toStop.isEmpty)
         #expect(plan.toStart.isEmpty)
     }
 
-    /// A device stopped this cycle (uid "a" unchecked) frees a cap slot that a
-    /// newly-enabled candidate (uid "e") immediately fills in the SAME reconciliation
-    /// pass. This works because `remainingRunningCount` is computed as
-    /// `runningDeviceIDs.subtracting(toStop).count` — i.e. toStop is subtracted BEFORE
-    /// the toStart loop evaluates the cap, so freed slots are visible immediately
-    /// rather than only on the next reconcile() call.
-    @Test func stoppingADeviceFreesItsCapSlotForANewStartInTheSamePass() {
-        let running: Set<AudioObjectID> = [1, 2, 3, 4]
-        let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b", 3: "c", 4: "d"]
-        let catalog: [(id: AudioObjectID, uid: String)] = [
-            (1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"),
-        ]
+    /// The device that was running (uid "a") stops because the default route moved to
+    /// "e" in the same pass that "e" becomes eligible to start — demonstrating the stop
+    /// and the corresponding start are decided together in one reconciliation pass,
+    /// not staggered across two calls.
+    @Test func routeChangeStopsTheOldDeviceAndStartsTheNewOneInTheSamePass() {
+        let running: Set<AudioObjectID> = [1]
+        let runningUIDs: [AudioObjectID: String] = [1: "a"]
+        let catalog: [(id: AudioObjectID, uid: String)] = [(1, "a"), (5, "e")]
         let plan = OutputDeviceEQCoordinator.planReconciliation(
             catalogDevices: catalog,
             runningDeviceIDs: running,
             runningDeviceUIDs: runningUIDs,
-            enabledUIDs: ["b", "c", "d", "e"],   // "a" unchecked, "e" newly checked
+            enabledUIDs: ["e"],              // user had switched their selection to "e"
             globallyEnabled: true,
+            defaultOutputDeviceUID: "e",     // and macOS is now routing to "e"
             maxSimultaneous: 4)
 
         #expect(plan.toStop == [1])
@@ -154,9 +184,10 @@ import Testing
     // MARK: - "Device disappears mid-operation" (mixed present/absent, reused IDs)
 
     /// Catalog is non-empty but exactly ONE of several previously-running devices is
-    /// missing from it (the others are still present). Only the missing device should
-    /// be in toStop.
-    @Test func onlyTheOneMissingRunningDeviceAmongSeveralIsStopped() {
+    /// missing from it. The one still matching the default route stays up; the other
+    /// present-but-not-routed-to device is ALSO stopped (route gating), on top of the
+    /// missing one.
+    @Test func missingDeviceAndNonRouteDeviceAreBothStoppedOnlyRouteDeviceStays() {
         let running: Set<AudioObjectID> = [1, 2, 3]
         let runningUIDs: [AudioObjectID: String] = [1: "a", 2: "b", 3: "c"]
         let plan = OutputDeviceEQCoordinator.planReconciliation(
@@ -165,9 +196,10 @@ import Testing
             runningDeviceUIDs: runningUIDs,
             enabledUIDs: ["a", "b", "c"],
             globallyEnabled: true,
+            defaultOutputDeviceUID: "a",            // only "a" is the active route
             maxSimultaneous: 4)
 
-        #expect(plan.toStop == [2])
+        #expect(Set(plan.toStop) == [2, 3])
         #expect(plan.toStart.isEmpty)
     }
 
@@ -191,6 +223,7 @@ import Testing
             runningDeviceUIDs: [5: "old-device-uid"],  // engine was started for the old one
             enabledUIDs: ["old-device-uid"],           // user's checkbox state didn't change
             globallyEnabled: true,
+            defaultOutputDeviceUID: "old-device-uid",
             maxSimultaneous: 4)
 
         // UID mismatch at the reused id means the old device is gone, so its stale

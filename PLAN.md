@@ -1,8 +1,9 @@
 # eqYourMacbook — Implementation Plan
 
-A tiny menu-bar EQ, now supporting any number of output devices simultaneously
-(per-device checkboxes; built-in speakers enabled by default — see the
-multi-device blockquote in §1 and `docs/CONTRACT.md`). No windows, no per-app
+A tiny menu-bar EQ, letting the user pick which single output device to EQ from
+any available device (checkbox list, mutually exclusive; built-in speakers
+enabled by default — see the multi-device blockquote in §1 and
+`docs/CONTRACT.md`). No windows, no per-app
 routing. Parametric EQ with freely chosen frequencies and uncapped gain.
 Near-zero idle cost, no audio glitches under load, works on battery.
 
@@ -110,14 +111,30 @@ We never change the default device and never run against any device other than t
 built-in speakers — which is also the most stable possible target (fixed 48 kHz,
 never disconnects). This sidesteps most known device-change bugs by design.
 
-> **Superseded by multi-device support (see `docs/CONTRACT.md`).** The app no
-> longer engages/disengages on the system default-output route; instead the user
-> checks any number of output devices independently (built-in speakers checked by
-> default), each running its own tap+aggregate+IOProc concurrently. The
-> single-device design above is kept for historical rationale (why built-in
-> speakers were the original target); the component list and engage-sequence
-> below are per-device and instantiated once per checked device, not once
-> globally — see `EQDeviceEngine`/`OutputDeviceCatalog`/`OutputDeviceEQCoordinator`.
+> **Superseded by multi-device support, itself later corrected (see
+> `docs/CONTRACT.md`).** The user picks WHICH device to EQ from any output
+> device (built-in speakers checked by default), not just built-in — that part
+> of the multi-device work stands. But the "any number of devices
+> simultaneously, each running its own tap+aggregate+IOProc concurrently" part
+> of that redesign was wrong and has been reverted: a
+> `stereoGlobalTapButExcludeProcesses` tap mutes captured audio system-wide, not
+> per-device, so more than one engine running at once (or an engine running for
+> a device that ISN'T the current default-output route) silences audio
+> everywhere while nothing plays through the device actually in use — this was
+> a real, confirmed bug (checking built-in speakers kept forcing audio there
+> even after plugging in and routing to a DAC). The engage/disengage logic this
+> section originally described — "listen on
+> `kAudioHardwarePropertyDefaultOutputDevice`, engage only when it matches the
+> target device" — turned out to be exactly right, just needed generalizing
+> from "target is always built-in" to "target is whichever single device the
+> user checked". Current behavior: exactly one device may be checked at a time
+> (checking one disables the others in the UI); that device's engine runs ONLY
+> while it is also the OS's actual default-output route, mirroring the
+> engage/disengage description above but keyed off the user's selection instead
+> of a hardcoded built-in-speakers target. The app never selects or overrides
+> output routing itself — see `docs/CONTRACT.md`'s "Engage policy" for the
+> enforced invariant and `OutputDeviceEQCoordinator.reconcile()`/
+> `planReconciliation` for the implementation.
 
 ---
 
@@ -359,7 +376,8 @@ checklist was worked through on the Mac:
 
 | Risk | Mitigation |
 |---|---|
-| Zero-buffer bug after device churn (forums/825780) | Watchdog + full-stack rebuild; we only ever target built-in speakers |
+| Zero-buffer bug after device churn (forums/825780) | Watchdog + full-stack rebuild; we only ever run against one device (whichever the user checked AND is the current default-output route) |
+| Process tap mutes audio system-wide, not per-device — running the engine for a non-active-route device silences audio everywhere (confirmed real bug, see `docs/CONTRACT.md`'s "Engage policy") | Exactly one device may be checked at a time; its engine only runs while that device is also the OS's actual default-output route (`OutputDeviceEQCoordinator.reconcile()`) |
 | TCC denial is silent (zeros, no error) | Watchdog doubles as detector; UI hint to System Settings |
 | Feedback loop | Mandatory self-exclusion in CATapDescription (step 2); M1 verify |
 | RT violations → glitches under load | No alloc/locks/logging in IOProc; M2 verify under CPU load |
