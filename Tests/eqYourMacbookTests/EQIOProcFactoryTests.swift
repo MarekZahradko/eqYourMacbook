@@ -1,14 +1,12 @@
 // Real-signal tests against the PRODUCTION IOProc block (EQIOProcFactory.makeIOBlock),
 // not a hand-rolled parallel vDSP setup (that's what EngineCoefficientTests.swift already
-// covers, at the coefficient-layout level). Each test here builds a real
-// EQDeviceRTContext with a real vDSP_biquadm_CreateSetup, builds the actual IOBlock via
-// makeIOBlock(context:), and feeds it synthetic AudioBufferLists via
-// AudioBufferTestSupport.swift's TestAudioBuffer/invokeIOBlock — i.e. it exercises the
-// exact code path the real hardware IOProc runs.
-//
-// `.serialized`: defense-in-depth, matching EngineCoefficientTests (these tests don't
-// share mutable static state directly, but EQCoefficients.sectionCoefficients — used
-// indirectly to build the setups below — does, via its lock-guarded cache).
+// covers, at the coefficient-layout level). Each test builds a real EQDeviceRTContext
+// with a real vDSP_biquadm_CreateSetup, builds the actual IOBlock via makeIOBlock(context:),
+// and feeds it synthetic AudioBufferLists via AudioBufferTestSupport.swift's
+// TestAudioBuffer/invokeIOBlock — exercising the exact code path the real hardware IOProc
+// runs. `.serialized` is defense-in-depth, matching EngineCoefficientTests: these tests
+// don't share mutable static state directly, but EQCoefficients.sectionCoefficients (used
+// indirectly below) does, via its lock-guarded cache.
 import Accelerate
 import AudioToolbox
 import Testing
@@ -20,8 +18,7 @@ import Testing
 
     // MARK: - RT context construction (mirrors EQDeviceEngine+RTState.swift's
     // allocateRTScratch/installBiquadSetup, but built directly — no EQDeviceEngine
-    // instance — per this test file's mandate to exercise makeIOBlock/EQDeviceRTContext
-    // directly rather than going through the engine).
+    // instance — since this file exercises makeIOBlock/EQDeviceRTContext directly.
 
     private func makeContext(band: EQBand, sampleRate: Double, channels: Int = EQCoefficients.channels) -> EQDeviceRTContext {
         let context = EQDeviceRTContext()
@@ -54,12 +51,11 @@ import Testing
     /// EQDeviceRTContext/makeIOBlock built for `band`, and return the measured gain in dB
     /// (RMS(output)/RMS(input) over a steady-state window, phase-independent).
     ///
-    /// frameCount/discard: 4096 frames (85.3 ms @ 48 kHz) with the first 1024 discarded
-    /// as transient margin. The biquads under test here have Q ≈ 1.4 (1-octave
-    /// bandwidth), whose pole radius r ≈ 0.97 gives a settling time constant of
-    /// ~1/(1-r) ≈ 30 samples; discarding 1024 is >30x that, leaving 3072 steady-state
-    /// samples (>45 periods even at the lowest probe frequency used below) for a stable
-    /// RMS estimate.
+    /// frameCount/discard: 4096 frames (85.3 ms @ 48 kHz) with the first 1024 discarded as
+    /// transient margin. The biquads under test have Q ≈ 1.4 (1-octave bandwidth), whose
+    /// pole radius r ≈ 0.97 gives a settling time constant of ~1/(1-r) ≈ 30 samples;
+    /// discarding 1024 (>30x that) leaves 3072 steady-state samples (>45 periods even at
+    /// the lowest probe frequency below) for a stable RMS estimate.
     private func measureGainDB(band: EQBand, probeFrequency: Double,
                                 frameCount: Int = 4096, discard: Int = 1024) -> Double {
         let context = makeContext(band: band, sampleRate: sampleRate)
@@ -86,7 +82,6 @@ import Testing
 
     // MARK: - (a) Sine wave at a known frequency: output amplitude matches the filter's
     // analytically-derived gain at that frequency.
-    //
     // Band: peaking (bell), f0 = 1000 Hz, gain = +6 dB, bandwidth = 1.0 octave, 48 kHz.
     //
     // HAND DERIVATION of the expected ≈ +6.02 dB at f0 (RBJ peaking cookbook):
@@ -146,7 +141,6 @@ import Testing
     }
 
     // MARK: - (c) Silence in → silence out, regardless of the configured filter.
-    //
     // Zero input through an LTI system with zero initial state produces exactly zero
     // output (y[n] = b0·0 + s1, s1 initially 0, inductively 0 forever) — no tolerance
     // needed, exact equality.
@@ -167,12 +161,11 @@ import Testing
     }
 
     // MARK: - (d) Bypass flag: identity passthrough regardless of the configured filter.
-    //
     // A +6 dB peaking filter at 1000 Hz would visibly boost a 1000 Hz sine (see test
     // above) — with context.bypass=1, the IOProc must instead memcpy input straight to
-    // output, so the SAME 1000 Hz sine must come out byte-identical (exact equality, not
-    // a gain comparison), proving bypass truly ignores the biquad setup rather than
-    // approximating a 0 dB response through it.
+    // output, so the SAME sine must come out byte-identical (exact equality, not a gain
+    // comparison), proving bypass truly ignores the biquad setup rather than approximating
+    // a 0 dB response through it.
     @Test func bypassPassesInputThroughUnmodified() {
         let band = EQBand(frequency: 1000, gain: 6, bandwidth: 1.0, filterType: .parametric)
         let context = makeContext(band: band, sampleRate: sampleRate)

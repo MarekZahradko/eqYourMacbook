@@ -24,12 +24,11 @@ extension EQDeviceEngine {
 
     // MARK: - update() — live coefficient swap (no restart, no glitch)
 
-    /// Live coefficient swap. CONTRACT allows the engine to coalesce; sliders fire
-    /// ~60 Hz, so we store the latest bands (latest-wins) and apply at most once every
-    /// ~50 ms. The actual apply hands the new coefficients to the RT thread, which calls
-    /// SetTargetsDouble itself (see flushPendingUpdate / makeIOBlock), so the setup's
-    /// target state has exactly one writer and never races vDSP_biquadm. RT thread
-    /// never blocks on this.
+    /// Live coefficient swap. CONTRACT allows coalescing; sliders fire ~60 Hz, so we store
+    /// the latest bands (latest-wins) and apply at most once every ~50 ms. The actual
+    /// apply hands coefficients to the RT thread, which calls SetTargetsDouble itself (see
+    /// flushPendingUpdate / makeIOBlock) — exactly one writer, never racing vDSP_biquadm;
+    /// the RT thread never blocks on this.
     func update(bands: [EQBand]) {
         currentBands = bands
         pendingUpdateBands = bands
@@ -54,12 +53,10 @@ extension EQDeviceEngine {
         }
     }
 
-    /// Apply the latest pending bands by writing targets into the RT handoff buffer.
-    ///
-    /// Only writes when the RT thread has consumed the previous update
-    /// (`pendingFlag == 0`). If not (rare — the ~50 ms coalesce window is far longer
-    /// than an IO callback period), keep `pendingUpdateBands` and reschedule so the
-    /// latest value still lands on the next tick.
+    /// Apply the latest pending bands by writing targets into the RT handoff buffer. Only
+    /// writes when the RT thread has consumed the previous update (`pendingFlag == 0`); if
+    /// not (rare — the ~50 ms coalesce window is far longer than an IO callback period),
+    /// keep `pendingUpdateBands` and reschedule so the latest value lands on the next tick.
     private func flushPendingUpdate() {
         guard case .running = state, let bands = pendingUpdateBands,
               let context = rtContext, let pending = context.pendingCoeffs else { return }

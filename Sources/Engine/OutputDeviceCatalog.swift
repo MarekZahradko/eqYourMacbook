@@ -1,8 +1,8 @@
 // Enumerates output devices and reports hot-plug changes. Replaces the old
-// single-route DeviceWatcher now that §5 lets the user enable the EQ on any number
-// of output devices simultaneously, not just whichever one is currently the system
-// default. OutputDeviceCatalog never starts/stops anything — it only reports which
-// devices exist; OutputDeviceEQCoordinator decides policy.
+// single-route DeviceWatcher now that §5 lets the user enable the EQ on any number of
+// output devices simultaneously, not just the current system default.
+// OutputDeviceCatalog never starts/stops anything — it only reports which devices
+// exist; OutputDeviceEQCoordinator decides policy.
 
 import CoreAudio
 import Foundation

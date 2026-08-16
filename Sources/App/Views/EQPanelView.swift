@@ -62,9 +62,14 @@ struct EQPanelView: View {
 
             Divider()
 
-            StatusFooterView()
+            // Redundant with the "EQ" toggle above while active — the toggle's tint
+            // already says "enabled", and per-device status now shows on DeviceRowView.
+            // Shown only for states that need the user's attention/action.
+            if controller.status != .active {
+                StatusFooterView()
 
-            Divider()
+                Divider()
+            }
 
             HStack {
                 Toggle("Gain-Staging", isOn: $controller.gainStagingEnabled)

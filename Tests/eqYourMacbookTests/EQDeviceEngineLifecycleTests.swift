@@ -1,18 +1,15 @@
 // EQDeviceEngine lifecycle tests, driven entirely through FakeCoreAudioTapService (no
-// real CoreAudio hardware/objects touched). Covers: start() success (state sequence +
-// call order), start() failure at each of the seam's CoreAudio calls (surfacing the
-// correct .failed(...) via failStart), stop()'s CONTRACT.md-documented teardown order,
-// live coefficient-update coalescing, the bypass-publish-before-startDevice ordering
-// fix, and gain-staging's effect on the REAL RT signal path (via the fake's captured
-// production IOProc block).
+// real CoreAudio hardware/objects touched). Covers: start() success/failure (state
+// sequence + call order + CONTRACT.md teardown order), live coefficient-update
+// coalescing, the bypass-publish-before-startDevice ordering fix, and gain-staging's
+// effect on the REAL RT signal path (via the fake's captured production IOProc block).
 //
 // Phase A of start() is synchronous; phase B (IOProc creation + startDevice + the
 // transition to .running) is deferred ~0.3 s via DispatchQueue.main.asyncAfter (see
-// EQDeviceEngine+Lifecycle.swift). EQDeviceEngine is @MainActor, and on Darwin the
-// MainActor's executor IS the main dispatch queue — so a `@MainActor @Test func ...
-// async` that `await`s past that delay lets the deferred closure actually run on the
-// same queue before the test resumes. Coalesced update() applies (~50 ms,
-// EQDeviceEngine+LiveUpdate.swift) are awaited the same way.
+// EQDeviceEngine+Lifecycle.swift). Since EQDeviceEngine is @MainActor and on Darwin the
+// MainActor's executor IS the main dispatch queue, a `@MainActor @Test func ... async`
+// that `await`s past that delay lets the deferred closure run before the test resumes.
+// Coalesced update() applies (~50 ms, EQDeviceEngine+LiveUpdate.swift) are awaited the same way.
 import AudioToolbox
 import CoreAudio
 import Foundation
@@ -235,14 +232,12 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
     // IOProc block), not a parallel coefficient comparison.
 
     @Test func gainStagingFoldsExactMasterGainIntoRTSignal() async throws {
-        // +18 dB peaking band: gain-staging (enabled) computes
-        // masterGainDB(enabled: true) == -18 (attenuate by the largest positive band
-        // gain), vs 0 when disabled. Scaling only section 0's b-terms by a constant
-        // linear factor (EQCoefficients.sectionCoefficients) scales H(z) by that SAME
-        // constant at EVERY frequency (a-terms untouched) — so the difference between
-        // the two configurations' measured gain at ANY probe frequency must be exactly
-        // +18 dB, regardless of the peaking filter's own shape at that frequency. This
-        // makes the assertion below an exact, hand-derivable fact, not an approximation.
+        // +18 dB peaking band: gain-staging (enabled) computes masterGainDB(enabled: true)
+        // == -18 (attenuate by the largest positive band gain), vs 0 when disabled. Since
+        // scaling only section 0's b-terms by a constant linear factor scales H(z) by that
+        // same constant at EVERY frequency, the difference between the two configurations'
+        // measured gain at ANY probe frequency must be exactly +18 dB — an exact,
+        // hand-derivable fact, not an approximation.
         let band = EQBand(frequency: 1000, gain: 18, bandwidth: 1.0, filterType: .parametric)
 
         let fakeEnabled = FakeCoreAudioTapService()

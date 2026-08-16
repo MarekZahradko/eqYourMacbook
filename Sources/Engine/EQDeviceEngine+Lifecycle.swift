@@ -1,9 +1,8 @@
 // EQDeviceEngine's start-up path: tap/aggregate construction, stream-format
 // verification, own-process (PID) translation, and the phase-A/phase-B state
 // transitions those drive. `state`'s setter is `private` to EQDeviceEngine.swift
-// (matching docs/CONTRACT.md's `private(set) var state`), so finishStart()/
-// failStart() drive transitions through the `transition(to:)` hook defined there
-// rather than widening that access control.
+// (matching docs/CONTRACT.md's `private(set) var state`), so finishStart()/failStart()
+// drive transitions through the `transition(to:)` hook defined there instead.
 
 import AudioToolbox
 import CoreAudio
@@ -28,11 +27,9 @@ extension EQDeviceEngine {
     }
 
     /// Phase A is fully synchronous (translate PID, create tap, create aggregate,
-    /// allocate RT state). Phase B (create IOProc + start + state → .running) is
-    /// deferred ~0.3 s so the freshly-created aggregate has time to come alive,
-    /// without blocking the main thread.
-    ///
-    /// Not private: called from rebuild() in EQDeviceEngine+Watchdog.swift.
+    /// allocate RT state). Phase B (create IOProc + start + state → .running) is deferred
+    /// ~0.3 s so the freshly-created aggregate has time to come alive, without blocking
+    /// the main thread. Not private: called from rebuild() in EQDeviceEngine+Watchdog.swift.
     func performStart(bands: [EQBand]) {
         currentBands = bands
         do {

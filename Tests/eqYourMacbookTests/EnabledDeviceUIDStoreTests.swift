@@ -5,11 +5,8 @@ import Foundation
 // MARK: - EnabledDeviceUIDStore round-trip
 //
 // Mirrors PresetStoreTests' isolation pattern (AppLogicTests.swift): a uniquely-named
-// UserDefaults suite per test instance, torn down in deinit, so tests never read/write
-// the real `UserDefaults.standard` domain or interfere with each other. This required
-// adding a `defaults:` injection seam to EnabledDeviceUIDStore itself (it previously
-// hardcoded `.standard` with no way to isolate it) — the same seam PresetStore already
-// has; production call sites are unaffected since the parameter defaults to `.standard`.
+// UserDefaults suite per test instance, torn down in deinit, so tests never touch the
+// real `UserDefaults.standard` domain or interfere with each other.
 
 @Suite final class EnabledDeviceUIDStoreTests {
 

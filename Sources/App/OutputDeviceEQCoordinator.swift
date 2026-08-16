@@ -74,23 +74,19 @@ struct AggregateEngineStatus: Equatable {
     private var currentBypass = false
     private var currentGainStagingEnabled = true
 
-    // Memoizes anyOtherProcessOutputtingAudio(excluding:) across every engine's watchdog
-    // tick (each EQDeviceEngine runs its own independent 5 s DispatchSourceTimer on
-    // .main, so ticks aren't synchronized). Every engine would ask this with the same
-    // ownProcessObjectID and get the identical CoreAudio answer, so re-enumerating the
-    // system process list + re-querying kAudioProcessPropertyIsRunningOutput once per
-    // engine per tick is pure waste. TTL is short (1 s) so it doesn't blur the watchdog's
-    // own 5 s-period / 2-consecutive-check detection latency — it only dedupes calls
-    // that land within the same ~1 s window, which real per-engine timer jitter can do.
+    // Memoizes anyOtherProcessOutputtingAudio(excluding:) across engines' independent,
+    // unsynchronized 5 s watchdog timers — every engine asks the same CoreAudio question,
+    // so re-enumerating per engine per tick is waste. TTL is short (1 s) so it only
+    // dedupes calls landing within the same jitter window, without blurring the
+    // watchdog's own 5 s/2-check detection latency.
     private static let othersOutputtingCacheTTL: TimeInterval = 1.0
     private var cachedOthersOutputting: Bool?
     private var othersOutputtingCachedAt: Date?
 
-    // Defense-in-depth only: setDeviceEnabled() and the default-output-route gating
-    // in planReconciliation already guarantee at most one engine ever runs (the
-    // process tap's mute is system-wide, not per-device — see reconcile()'s doc
-    // comment — so more than one running engine at a time is never safe). This cap
-    // exists purely to bound an unforeseen bug in that invariant, not as a tunable.
+    // Defense-in-depth only: setDeviceEnabled() and the default-output-route gating in
+    // planReconciliation already guarantee at most one engine ever runs (the process
+    // tap's mute is system-wide, not per-device — see reconcile()). This cap just bounds
+    // an unforeseen bug in that invariant, not a tunable.
     private static let maxSimultaneousDevices = 1
 
     init() {}
@@ -184,15 +180,13 @@ struct AggregateEngineStatus: Equatable {
 
     // MARK: - Reconciliation
     //
-    // The process tap (`stereoGlobalTapButExcludeProcesses`, see EQDeviceEngine+Lifecycle)
-    // mutes a process's audio system-wide, not just on the tapped device — CoreAudio
-    // has no per-device-scoped tap/mute mode. So an engine may ONLY run for the
-    // device the OS is actually routing default output to right now: running it for
-    // any other device would silence audio everywhere while nothing plays through
-    // the actually-active route. This is why only one device can ever be enabled
-    // (setDeviceEnabled enforces that) and why "enabled" here further means "start
-    // only if this device is also the current default output" — the app must never
-    // choose or override the user's/macOS's output routing, only ride along with it.
+    // The process tap (`stereoGlobalTapButExcludeProcesses`) mutes audio system-wide, not
+    // per-device — CoreAudio has no per-device-scoped tap/mute mode. So an engine may
+    // ONLY run for the device the OS is currently routing default output to; running it
+    // for any other device would silence audio everywhere while nothing plays through the
+    // actually-active route. Hence only one device can ever be enabled, and "enabled" here
+    // further means "start only if also the current default output" — the app must never
+    // choose or override output routing, only ride along with it.
     private func reconcile() {
         // First-launch seeding needs the catalog populated; retry if still empty.
         if enabledDeviceUIDs.isEmpty {
@@ -268,13 +262,10 @@ extension OutputDeviceEQCoordinator {
     /// Pure: decide which device IDs to stop and which (present, enabled,
     /// not-yet-running) device IDs to start, capped at maxSimultaneous.
     ///
-    /// `defaultOutputDeviceUID` gates both directions: an engine only stays
-    /// running (or gets started) for the device the OS is CURRENTLY routing
-    /// default output to. This is not an optimization — running the engine
-    /// (and its system-wide mute) for a device that isn't the active route
-    /// would silence audio everywhere while nothing plays through the device
-    /// actually in use. The app must only ride along with routing, never
-    /// choose or override it.
+    /// `defaultOutputDeviceUID` gates both directions — an engine only stays running
+    /// (or starts) for the device the OS is CURRENTLY routing default output to. Not an
+    /// optimization: running the engine's system-wide mute for a non-active-route device
+    /// would silence audio everywhere while nothing plays through the device in use.
     nonisolated static func planReconciliation(
         catalogDevices: [(id: AudioObjectID, uid: String)],
         runningDeviceIDs: Set<AudioObjectID>,
@@ -347,11 +338,6 @@ extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
         publishAggregateStatus()
     }
 
-    // Shared TTL-cached helper (CLAUDE.md audit fix): computes the real answer once per
-    // ~1 s window and reuses it for every engine that asks within that window, instead
-    // of each of the (up to maxSimultaneousDevices) engines independently re-querying
-    // CoreAudio on its own 5 s timer. Recomputes on a cache miss/expiry; never changes
-    // the watchdog's detection semantics, only avoids redundant round-trips.
     func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool {
         let now = Date()
         if let cachedOthersOutputting, let othersOutputtingCachedAt,

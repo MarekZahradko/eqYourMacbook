@@ -3,7 +3,6 @@
 import Foundation
 
 extension EQPresetData {
-    /// Identity preset — no EQ applied.
     static let flat = EQPresetData(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         name: "Flat",
@@ -39,20 +38,17 @@ extension EQPresetData {
         let sorted = bands.map(\.frequency).sorted()
         let range = EQBand.frequencyRange
 
-        // Check gap below lowest
         var bestFreq: Float = sorted[0] / 2
-        var bestGap: Float = log2(sorted[0] / range.lowerBound) // gap from range floor
+        var bestGap: Float = log2(sorted[0] / range.lowerBound)
 
-        // Check gaps between bands
         for i in 1..<sorted.count {
             let gap = log2(sorted[i] / sorted[i - 1])
             if gap > bestGap {
                 bestGap = gap
-                bestFreq = sqrt(sorted[i] * sorted[i - 1]) // geometric midpoint
+                bestFreq = sqrt(sorted[i] * sorted[i - 1])
             }
         }
 
-        // Check gap above highest
         let topGap = log2(range.upperBound / sorted.last!)
         if topGap > bestGap {
             bestFreq = sorted.last! * 2

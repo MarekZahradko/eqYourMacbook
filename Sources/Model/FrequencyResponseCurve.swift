@@ -14,7 +14,9 @@ extension BiquadResponse {
         }
     }
 
-    /// Composite frequency response: sum of all bands' dB contributions.
+    /// Composite frequency response for the UI curve: sum of all bands' dB contributions,
+    /// using `displayCoefficients` (not `coefficients`) so the graph shows the shelf/LP/HP
+    /// shape the user is designing, not the Vicanek-matched shape actually applied to audio.
     static func compositeResponse(
         bands: [EQBand], sampleRate: Double, frequencies: [Double]
     ) -> [Double] {
@@ -22,7 +24,7 @@ extension BiquadResponse {
             return [Double](repeating: 0.0, count: frequencies.count)
         }
 
-        let allCoeffs = bands.map { coefficients(for: $0, sampleRate: sampleRate) }
+        let allCoeffs = bands.map { displayCoefficients(for: $0, sampleRate: sampleRate) }
         return frequencies.map { freq in
             var total = 0.0
             for coeffs in allCoeffs {

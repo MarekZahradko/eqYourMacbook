@@ -38,14 +38,11 @@ extension EQDeviceEngine {
         let advancing = counter != lastWatchdogCounter
         lastWatchdogCounter = counter
 
-        // Zeros are legitimate when nothing is playing. Only treat a silent check as
-        // suspicious when some OTHER process is actually outputting audio — otherwise
-        // we'd false-trip on an idle but healthy chain. Prefer the delegate's shared,
-        // TTL-cached answer (OutputDeviceEQCoordinator memoizes this across every
-        // engine's watchdog tick, avoiding N redundant CoreAudio process-list
-        // enumerations per tick cycle); fall back to the uncached free function
-        // directly if no delegate is attached (e.g. an engine driven without a
-        // coordinator in isolation).
+        // Zeros are legitimate when nothing is playing, so only treat silence as
+        // suspicious when some OTHER process is actually outputting audio. Prefer the
+        // delegate's shared, TTL-cached answer (OutputDeviceEQCoordinator memoizes this
+        // across every engine's tick, avoiding N redundant CoreAudio enumerations);
+        // fall back to the uncached free function if no delegate is attached.
         let othersOutputting = delegate?.anyOtherProcessOutputtingAudio(excluding: ownProcessObjectID)
             ?? anyOtherProcessOutputtingAudio(excluding: ownProcessObjectID)
 
@@ -82,11 +79,10 @@ extension EQDeviceEngine {
 
     // MARK: - Pure decision logic (testable without CoreAudio/timers)
     //
-    // Extracted so the escalation policy (when 2 consecutive silent-but-should-be-playing
-    // ticks trigger a rebuild, and when persistent silence after a rebuild escalates to
-    // permission suspicion) can be tested deterministically, without a live
-    // DispatchSourceTimer — same pattern as OutputDeviceEQCoordinator's
-    // planReconciliation/aggregateStatus (OutputDeviceEQCoordinator.swift).
+    // Extracted so the escalation policy (2 consecutive silent-but-should-be-playing
+    // ticks → rebuild; persistent silence after a rebuild → permission suspicion) can be
+    // tested deterministically without a live DispatchSourceTimer — same pattern as
+    // OutputDeviceEQCoordinator's planReconciliation/aggregateStatus.
 
     struct WatchdogDecision: Equatable {
         /// maxAbs > 0 this tick — always clears the "already rebuilt once" latch,
@@ -139,16 +135,13 @@ extension EQDeviceEngine {
     }
 
     /// Full stack rebuild preserving the current bands, WITHOUT flickering through
-    /// .stopped (which would make the UI blink "disabled"). Tears down Core Audio
-    /// and RT state in place, then re-runs the start sequence.
-    ///
-    /// Guarded against reentrancy (a second wake notification racing the first, or a
-    /// watchdog tick during the deferred phase-B gap). After a successful rebuild we
-    /// fire .running UNCONDITIONALLY (bypassing the state didSet equality guard, since
-    /// state was already .running throughout), so the controller learns the chain is
-    /// healthy again.
-    ///
-    /// Not private: called from EQDeviceEngine+SleepWake.swift's wake handler.
+    /// .stopped (which would make the UI blink "disabled"): tears down Core Audio and RT
+    /// state in place, then re-runs the start sequence. Guarded against reentrancy (a
+    /// second wake notification racing the first, or a watchdog tick during the deferred
+    /// phase-B gap). After a successful rebuild fires .running UNCONDITIONALLY (bypassing
+    /// the state didSet equality guard, since state was already .running throughout), so
+    /// the controller learns the chain is healthy again. Not private: called from
+    /// EQDeviceEngine+SleepWake.swift's wake handler.
     func rebuild() {
         guard !rebuildInProgress else { return }
         rebuildInProgress = true

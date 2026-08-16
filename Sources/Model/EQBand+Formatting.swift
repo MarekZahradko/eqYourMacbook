@@ -24,7 +24,6 @@ extension EQBand {
         return sqrtf(p) / (p - 1)
     }
 
-    /// Convert Q factor to bandwidth in octaves.
     static func qToOctaves(_ q: Float) -> Float {
         return 2 * asinh(1 / (2 * q)) / logf(2)
     }

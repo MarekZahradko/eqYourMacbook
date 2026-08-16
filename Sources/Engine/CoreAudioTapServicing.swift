@@ -22,16 +22,15 @@ protocol CoreAudioTapServicing {
     func stopDevice(_ deviceID: AudioObjectID, _ procID: AudioDeviceIOProcID?) -> OSStatus
 
     // Added alongside the test-fake build-out (see FakeCoreAudioTapService.swift):
-    // performStart()'s step 3.5 format-verification and step 4 sample-rate read were
-    // calling the free functions in CoreAudioHelpers.swift directly, bypassing this seam
-    // entirely — meaning no test double could simulate a format mismatch/read failure,
-    // nor let performStart run past step 3.5 at all (a synthetic AudioObjectID fed to the
-    // real AudioObjectGetPropertyData always fails, since it isn't a HAL-registered
-    // object), which blocked testing the .running happy path and everything downstream of
-    // it (RT allocation, IOProc creation, bypass-publish ordering, gain-staging). Widening
-    // the seam to cover these two reads (mirrored in docs/CONTRACT.md) closes that gap;
-    // LiveCoreAudioTapService below forwards to the exact same free functions, so
-    // production behavior is unchanged byte-for-byte.
+    // performStart()'s step 3.5 format-verification and step 4 sample-rate read used to
+    // call CoreAudioHelpers.swift's free functions directly, bypassing this seam — so no
+    // test double could simulate a format mismatch/read failure, and a synthetic
+    // AudioObjectID always fails the real AudioObjectGetPropertyData (not HAL-registered),
+    // blocking performStart from reaching .running and everything downstream (RT
+    // allocation, IOProc creation, bypass-publish ordering, gain-staging). Widening the
+    // seam to cover these two reads (mirrored in docs/CONTRACT.md) closes that gap;
+    // LiveCoreAudioTapService forwards to the exact same free functions, so production
+    // behavior is unchanged.
     func getStreamFormat(_ deviceID: AudioObjectID) -> AudioStreamBasicDescription?
     func getDeviceNominalSampleRate(_ deviceID: AudioObjectID) -> Double
 }

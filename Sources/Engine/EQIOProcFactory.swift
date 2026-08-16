@@ -148,10 +148,10 @@ func makeIOBlock(context: EQDeviceRTContext) -> AudioDeviceIOBlock {
             return
         }
 
-        // Apply the biquad cascade. vDSP_biquadm processes all N channels with one
-        // shared section set, separate delay state per channel; strides handle
-        // interleaving. The scratch arrays already hold the exact non-Optional
-        // pointer types vDSP wants — pass them straight through, no rebind.
+        // Apply the biquad cascade. vDSP_biquadm processes all N channels with one shared
+        // section set and separate delay state per channel, with strides handling
+        // interleaving; the scratch arrays already hold the exact non-Optional pointer
+        // types vDSP wants, so pass them straight through with no rebind.
         guard let setup = context.biquadSetup, outPtrsValid else {
             copyInputToOutput(inList: inList, outList: outList)
             return

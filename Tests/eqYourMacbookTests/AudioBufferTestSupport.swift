@@ -1,12 +1,10 @@
 // Test-only helpers for driving a real AudioDeviceIOBlock (the RT callback built by
 // EQIOProcFactory.swift's makeIOBlock, or captured from FakeCoreAudioTapService) with
-// synthetic interleaved-stereo sample data, and reading back the result.
-//
-// Deliberately narrow: only the single INTERLEAVED-buffer layout is supported (one
-// AudioBuffer with mNumberChannels == channels), since that's what the aggregate device's
-// format this app assumes (Float32 interleaved, see EQDeviceEngine+Lifecycle.swift's
-// step-3.5 format check) — the IOProc's OTHER supported layout (deinterleaved,
-// per-channel buffers) isn't exercised by these tests.
+// synthetic interleaved-stereo sample data, and reading back the result. Deliberately
+// narrow: only the single INTERLEAVED-buffer layout is supported (one AudioBuffer with
+// mNumberChannels == channels), matching this app's assumed Float32-interleaved
+// aggregate format (see EQDeviceEngine+Lifecycle.swift's step-3.5 format check) — the
+// IOProc's other supported layout (deinterleaved, per-channel buffers) isn't exercised here.
 
 import AudioToolbox
 import CoreAudio

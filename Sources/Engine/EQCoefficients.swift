@@ -1,10 +1,9 @@
-// Pure, allocation-free coefficient-layout math shared by every per-device engine
-// and by the RT IOProc factory (EQDeviceRTContext.makeIOBlock). Extracted out of the
+// Pure, allocation-free coefficient-layout math shared by every per-device engine and
+// by the RT IOProc factory (EQDeviceRTContext.makeIOBlock). Extracted out of the
 // (formerly single-instance) EQEngine so N per-device EQDeviceEngine instances and the
-// RT context can both reach this without depending on the full engine class.
-//
-// No CoreAudio here — this is math only, and stays nonisolated/static so it is callable
-// from anywhere (including unit tests) with zero setup.
+// RT context can both reach it without depending on the full engine class. No CoreAudio
+// here — math only, kept nonisolated/static so it's callable from anywhere (including
+// unit tests) with zero setup.
 
 import Accelerate
 import Foundation
@@ -47,14 +46,13 @@ enum EQCoefficients {
     /// channel to compare against a scalar reference.
     //
     // Multi-entry memoization, keyed per distinct device configuration
-    // (bands/mutedFlags/sampleRate/channels/masterGainDB): N devices commonly share
-    // the same bands/masterGainDB (one global EQ applied to several devices) but can
-    // differ in sampleRate — a single-slot cache thrashed to near-0% hit rate with
-    // 2+ devices at different sample rates, since each device's coalesced update
-    // tick evicted the other's entry. Capacity is a small bound (`cacheCapacity`),
-    // simple LRU eviction — the app's own soft cap is 4 simultaneous devices
-    // (OutputDeviceEQCoordinator.maxSimultaneousDevices), so this only ever needs to
-    // hold a handful of entries; no need for anything fancier.
+    // (bands/mutedFlags/sampleRate/channels/masterGainDB). N devices commonly share
+    // bands/masterGainDB but can differ in sampleRate — a single-slot cache thrashed to
+    // near-0% hit rate with 2+ devices at different sample rates, since each device's
+    // coalesced update tick evicted the other's entry. Capacity is a small bound
+    // (`cacheCapacity`) with simple LRU eviction; the app's own soft cap is 4
+    // simultaneous devices (OutputDeviceEQCoordinator.maxSimultaneousDevices), so a
+    // handful of entries is enough.
     //
     // Thread-safety: `sectionCoefficients` is called only from the main-actor
     // coalescing path (EQDeviceEngine+LiveUpdate.swift's flushPendingUpdate,
@@ -62,13 +60,12 @@ enum EQCoefficients {
     // callback — so a lock here is not an RT-safety violation. It IS still needed:
     // Tests/eqYourMacbookTests/EngineCoefficientTests.swift's `@Test` functions run
     // concurrently by default (Swift Testing parallelizes within a non-`.serialized`
-    // `@Suite`), and were mutating this single static cache with no synchronization
-    // at all — a real concurrent read/write race on the cache's backing Arrays
-    // (COW, refcounted), independent of the per-device thrash problem above. A plain
-    // `NSLock` around the small linear scan is simplest and idiomatic for a static
-    // cache this size (an array, not a Dictionary: `EQBand` isn't `Hashable`, and a
-    // ≤`cacheCapacity`-entry linear scan is cheap enough that keying by a hash isn't
-    // worth the complexity).
+    // `@Suite`) and were mutating this single static cache with no synchronization at
+    // all — a real concurrent read/write race on the cache's backing Arrays (COW,
+    // refcounted), independent of the per-device thrash problem above. A plain `NSLock`
+    // around the small linear scan is simplest here (an array, not a Dictionary:
+    // `EQBand` isn't `Hashable`, and a ≤`cacheCapacity`-entry scan is cheap enough that
+    // keying by a hash isn't worth it).
     //
     // EQBand.== ignores `muted`/`id` (preset value identity, not runtime state), but
     // muted affects this function's output, so the cache key tracks it separately.

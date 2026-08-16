@@ -12,7 +12,7 @@ import os.log
 /// master-switch/health line the footer shows.
 enum DisplayStatus: Equatable {
     case active                        // master enabled (per-device rows show detail)
-    case disabled                      // user switched off
+    case disabled
     case permissionNeeded              // any engine's watchdog detected all-zero input
     case error(String)
 }
@@ -169,17 +169,10 @@ final class EQController: ObservableObject {
     // MARK: Persistence helpers
 
     // Debounces the UserDefaults write: `bands`'s didSet fires at slider-drag rate
-    // (30-60+ times/sec), but unlike coordinator.updateBands(bands) above (which the
-    // engine itself coalesces to ~50 ms, see EQDeviceEngine+LiveUpdate.swift), a
-    // JSONEncoder().encode + UserDefaults.set on every intermediate drag value is pure
-    // waste — only the value at rest needs to hit disk. Cancel-and-reschedule on every
-    // new didSet so a whole drag gesture collapses into one write, shortly after the
-    // user stops moving the slider.
-    //
-    // Residual risk (documented, not fixed here): if the app is killed within this
-    // window after the last change, that change is lost. eqYourMacbookApp.swift has no
-    // NSApplicationDelegateAdaptor / applicationWillTerminate hook to flush on quit, and
-    // adding one is app-lifecycle infrastructure beyond this fix's scope.
+    // (30-60+/sec); only the value at rest needs to hit disk, so cancel-and-reschedule
+    // collapses a whole drag gesture into one write shortly after the user stops.
+    // Residual risk (accepted): a kill within this window after the last change loses
+    // it — there's no applicationWillTerminate hook to flush on quit.
     private static let persistBandsDebounceInterval: TimeInterval = 0.4
     private var persistBandsWorkItem: DispatchWorkItem?
 

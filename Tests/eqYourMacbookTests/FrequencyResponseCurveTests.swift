@@ -4,7 +4,7 @@ import Foundation
 
 /// Tests for Sources/Model/FrequencyResponseCurve.swift (BiquadResponse.logFrequencies /
 /// .compositeResponse) — the UI curve view's frequency-axis sampling and per-frequency
-/// composite dB response. Previously zero coverage.
+/// composite dB response.
 @Suite struct FrequencyResponseCurveTests {
 
     // MARK: - logFrequencies: count, endpoints, log-spacing
@@ -41,11 +41,13 @@ import Foundation
 
     // MARK: - compositeResponse: single band cross-checked against the already-tested
     // lower-level BiquadCoefficients.gainDB(at:sampleRate:) — not a fresh magic number.
+    // Uses .parametric, which is identical under displayCoefficients and coefficients
+    // (only shelf/LP/HP diverge — see compositeResponseMultipleBandsSumsEachBandsContribution).
 
     @Test func compositeResponseSingleBandMatchesLowerLevelGainDB() {
         let sampleRate = 48_000.0
         let band = EQBand(frequency: 1000, gain: 6, bandwidth: 1.0, filterType: .parametric)
-        let coeffs = BiquadResponse.coefficients(for: band, sampleRate: sampleRate)
+        let coeffs = BiquadResponse.displayCoefficients(for: band, sampleRate: sampleRate)
         let freqs = [100.0, 1000.0, 10000.0]
 
         let composite = BiquadResponse.compositeResponse(bands: [band], sampleRate: sampleRate, frequencies: freqs)
@@ -59,13 +61,17 @@ import Foundation
     }
 
     // MARK: - compositeResponse: multiple bands sum, cross-checked term-by-term.
+    // Uses displayCoefficients, not coefficients: compositeResponse feeds the UI curve,
+    // which intentionally shows the pre-Vicanek (RBJ cookbook) shelf/LP/HP shape rather
+    // than the Vicanek-matched shape actually applied to audio — see displayCoefficients'
+    // doc comment in BiquadResponse.swift.
 
     @Test func compositeResponseMultipleBandsSumsEachBandsContribution() {
         let sampleRate = 48_000.0
         let bandA = EQBand(frequency: 200, gain: 4, bandwidth: 1.0, filterType: .lowShelf)
         let bandB = EQBand(frequency: 5000, gain: -3, bandwidth: 0.8, filterType: .parametric)
-        let coeffsA = BiquadResponse.coefficients(for: bandA, sampleRate: sampleRate)
-        let coeffsB = BiquadResponse.coefficients(for: bandB, sampleRate: sampleRate)
+        let coeffsA = BiquadResponse.displayCoefficients(for: bandA, sampleRate: sampleRate)
+        let coeffsB = BiquadResponse.displayCoefficients(for: bandB, sampleRate: sampleRate)
         let freqs = [100.0, 1000.0, 8000.0]
 
         let composite = BiquadResponse.compositeResponse(bands: [bandA, bandB], sampleRate: sampleRate, frequencies: freqs)

@@ -7,13 +7,12 @@ import Testing
 /// (per-engine-state collapse) — with zero CoreAudio involvement.
 ///
 /// Route-gating rationale: the process tap mutes a process's audio system-wide, not
-/// per-device (CoreAudio has no device-scoped tap/mute mode), so an engine may only
-/// run for the device that is CURRENTLY the OS's default output route — running it
-/// for any other device would silence audio everywhere while nothing plays through
-/// the actually-active device. `setDeviceEnabled` additionally enforces that only one
-/// device is ever enabled at a time, but `planReconciliation` itself is pure and takes
-/// `enabledUIDs` as given, so several of these tests exercise multi-candidate inputs
-/// to pin down the gating logic in isolation.
+/// per-device (CoreAudio has no device-scoped tap/mute mode), so an engine may only run
+/// for the device that is CURRENTLY the OS's default output route — otherwise it would
+/// silence audio everywhere while nothing plays through the actually-active device.
+/// `setDeviceEnabled` additionally enforces only one device is ever enabled at a time, but
+/// `planReconciliation` itself is pure and takes `enabledUIDs` as given, so several tests
+/// here exercise multi-candidate inputs to pin down the gating logic in isolation.
 @Suite struct OutputDeviceEQCoordinatorTests {
 
     // MARK: - planReconciliation: default-route gating
@@ -203,19 +202,12 @@ import Testing
         #expect(plan.toStart.isEmpty)
     }
 
-    /// GAP (documents a real correctness issue, not just a test): planReconciliation's
-    /// `stillPresent` check is purely ID-membership (`catalogIDs.contains(id)`) — it
-    /// never compares the running engine's OWN uid (`runningDeviceUIDs[id]`) against
-    /// the uid the catalog currently reports AT THAT SAME ID. If CoreAudio reuses an
-    /// AudioObjectID for a completely different physical device (old device unplugged,
-    /// new device enumerated, HAL happens to hand out the same ID) while the OLD
-    /// device's uid is still in `enabledUIDs` (the user never got a chance to react),
-    /// the plan considers the stale engine both "still present" (id matches) and
-    /// "still wanted" (old uid still enabled) — so it is NOT stopped, and the new
-    /// device's uid is never started either (its uid isn't enabled, and its id is
-    /// already "running" as far as the plan can see). The stale engine silently keeps
-    /// running against whatever CoreAudio now considers that AudioObjectID to be.
-    /// This test pins down the CURRENT (buggy) behavior; see report for the flag.
+    /// Guards against a CoreAudio AudioObjectID reuse hazard: if the HAL hands the same
+    /// id to a different physical device (old device unplugged, new one enumerated),
+    /// `stillPresent` must compare the running engine's OWN uid against the uid the
+    /// catalog now reports for that id (`catalogUIDByID[id] == uid`), not just id
+    /// membership — otherwise the stale engine (still "enabled" under its old uid) would
+    /// never be stopped, and the new device would never start (its uid isn't enabled).
     @Test func reusedAudioObjectIDStopsStaleEngineForTheOldDevice() {
         let plan = OutputDeviceEQCoordinator.planReconciliation(
             catalogDevices: [(5, "new-device-uid")],   // id 5 now belongs to a new device
@@ -296,15 +288,11 @@ import Testing
 
     /// Multiple simultaneously-.failed engines: aggregateStatus picks
     /// `engineStates.values.compactMap{...}.first`, i.e. whichever failed message the
-    /// Dictionary happens to yield first during iteration. Swift's Dictionary iteration
-    /// order is NOT contractually stable/deterministic across engine-state sets (it
-    /// depends on hashing, not insertion order), so which of several simultaneous
-    /// failure messages surfaces in the UI is effectively arbitrary/unspecified by this
-    /// implementation. This test intentionally does NOT pin down which one wins (that
-    /// would be flaky) — it only asserts the composed result is one of the actual
-    /// failure messages, never nil and never a fabricated third value. See report: this
-    /// "arbitrary pick among multiple failures" is flagged as a real (minor) gap —
-    /// nothing here loosens tolerances or skips coverage to work around it.
+    /// Dictionary happens to yield first during iteration — Swift's Dictionary iteration
+    /// order is NOT contractually stable (depends on hashing, not insertion order), so
+    /// which message wins is effectively arbitrary/unspecified — a real (minor) gap. This
+    /// test does NOT pin down which one wins (that would be flaky); it only asserts the
+    /// result is one of the actual failure messages, never nil or a fabricated value.
     @Test func aggregateStatusWithMultipleFailedEnginesSurfacesTheLowestDeviceID() {
         let status = OutputDeviceEQCoordinator.aggregateStatus(
             engineStates: [2: .failed("second device failed"), 1: .failed("first device failed")],

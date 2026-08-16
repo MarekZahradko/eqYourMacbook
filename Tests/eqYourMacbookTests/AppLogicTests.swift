@@ -5,9 +5,8 @@ import Foundation
 // MARK: - DisplayStatus derivation
 //
 // §5 (multi-output-device EQ) removed OutputRoute/DeviceWatcher and the single-route
-// shouldRun/engage policy along with them — engagement is now per-device (checkboxes
-// reconciled by OutputDeviceEQCoordinator), not a pure function of one route. What
-// remains pure and testable is the aggregate status derivation below.
+// shouldRun/engage policy; engagement is now per-device (reconciled by
+// OutputDeviceEQCoordinator). What remains pure and testable is the status derivation below.
 
 @Suite struct DisplayStatusTests {
 
@@ -80,22 +79,19 @@ import Foundation
     }
 
     @Test func instanceMethodDelegatesToStatic() {
-        // Independent hand derivation (not a call to the function under test): bands at
-        // 100 and 1000 Hz. Gaps in octaves: below-lowest log2(100/20)=log2(5)≈2.3219,
-        // interior log2(1000/100)=log2(10)≈3.3219, above-highest log2(20000/1000)=
-        // log2(20)≈4.3219. The above-highest gap is the largest, so the algorithm takes
-        // the "double the top band" branch: suggestion = 1000*2 = 2000 Hz.
+        // Independent hand derivation: bands at 100/1000 Hz give octave gaps of
+        // below-lowest≈2.32, interior≈3.32, above-highest≈4.32 — the largest is
+        // above-highest, so the algorithm takes the "double the top band" branch:
+        // suggestion = 1000*2 = 2000 Hz.
         let bands = [EQBand(frequency: 100, gain: 0), EQBand(frequency: 1000, gain: 0)]
         let preset = EQPresetData(id: UUID(), name: "", bands: bands, isBuiltIn: false)
         #expect(preset.suggestNewBandFrequency() == 2000)
     }
 
     @Test func largestGapBetweenInteriorBandsWins() {
-        // Bands at 200, 400, 8000 Hz. Gaps in octaves: below-lowest log2(200/20)=
-        // log2(10)≈3.3219, 200→400 = log2(2) = 1.0, 400→8000 = log2(20)≈4.3219,
-        // above-highest log2(20000/8000)=log2(2.5)≈1.3219. The largest is the INTERIOR
-        // 400→8000 gap (never exercised before this test — prior coverage only had
-        // 0/1-band inputs), so the suggestion is its geometric midpoint:
+        // Bands at 200, 400, 8000 Hz. Octave gaps: below-lowest≈3.32, 200→400=1.0,
+        // 400→8000≈4.32, above-highest≈1.32. The largest is the INTERIOR 400→8000 gap
+        // (never exercised before this test), so the suggestion is its geometric midpoint:
         // sqrt(400*8000) ≈ 1788.8544 Hz.
         let bands = [
             EQBand(frequency: 200, gain: 0),
@@ -107,17 +103,12 @@ import Foundation
     }
 
     @Test func resultClampedToAudibleRange() {
-        // Genuinely exercise the clamp (the pre-existing version of this test used a
-        // single band at 20000 Hz, whose unclamped result — 10000 Hz — was already well
-        // inside range, so `.clamped(to:)` was a no-op and the test passed regardless
-        // of whether clamping worked at all).
+        // Genuinely exercise the clamp (a prior version used a single band at 20000 Hz,
+        // whose unclamped result was already in-range, making `.clamped(to:)` a no-op).
         //
-        // 11 bands at 39 * 1.8^i (i=0...10) Hz. The below-lowest gap is
-        // log2(39/20)=log2(1.95)≈0.9658 octaves; every interior gap is exactly
-        // log2(1.8)≈0.8480 octaves (< the below-lowest gap, so it never overrides); the
-        // final above-highest gap is log2(20000/13924.82)≈0.5205 octaves (also smaller).
-        // So the below-lowest branch wins throughout and is never overridden, leaving
-        // bestFreq = 39/2 = 19.5 Hz — BELOW EQBand.frequencyRange's 20 Hz floor — which
+        // 11 bands at 39 * 1.8^i (i=0...10) Hz: the below-lowest gap (≈0.9658 octaves)
+        // beats every interior/above-highest gap (≈0.848/0.5205), so that branch wins
+        // throughout, leaving bestFreq = 39/2 = 19.5 Hz — below the 20 Hz floor — which
         // `.clamped(to:)` must pull up to exactly 20.
         let bands = (0...10).map { EQBand(frequency: Float(39.0 * pow(1.8, Double($0))), gain: 0) }
         let freq = EQPresetData.suggestFrequency(for: bands)
@@ -210,11 +201,9 @@ import Foundation
     }
 
     /// The defensive filter in load() (`decoded.filter { !$0.isBuiltIn }`) strips any
-    /// persisted preset whose OWN `isBuiltIn` flag is true — it doesn't cross-reference
-    /// against the actual built-in identity list, it trusts the persisted flag itself.
-    /// Simulates a preset that "somehow ended up persisted" with isBuiltIn=true (e.g. a
-    /// future bug elsewhere writing one into the custom-presets store) and confirms
-    /// load() strips it out rather than surfacing a duplicate/fake built-in.
+    /// persisted preset whose OWN `isBuiltIn` flag is true, trusting the persisted flag
+    /// itself rather than cross-referencing the built-in identity list. Simulates a preset
+    /// that "somehow ended up persisted" with isBuiltIn=true and confirms load() strips it.
     @Test func decodedPresetFlaggedAsBuiltInIsStrippedByTheDefensiveFilter() {
         let defaults = UserDefaults(suiteName: suiteName)!
         let smuggledBuiltIn = EQPresetData(

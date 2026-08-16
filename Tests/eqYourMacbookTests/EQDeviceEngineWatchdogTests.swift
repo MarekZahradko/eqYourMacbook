@@ -1,18 +1,15 @@
 // Tests for EQDeviceEngine.watchdogDecision — the pure decision logic extracted from
-// EQDeviceEngine+Watchdog.swift's watchdogTick() (mirroring the project's existing
-// planReconciliation/aggregateStatus pattern in OutputDeviceEQCoordinator.swift) so the
-// escalation policy (2 consecutive silent-but-should-be-playing ticks → rebuild;
-// persistent silence after a rebuild → permission suspicion) is testable deterministically,
-// without a live DispatchSourceTimer.
+// EQDeviceEngine+Watchdog.swift's watchdogTick() (mirroring the planReconciliation/
+// aggregateStatus pattern in OutputDeviceEQCoordinator.swift) so the escalation policy
+// (2 consecutive silent-but-should-be-playing ticks → rebuild; persistent silence after
+// a rebuild → permission suspicion) is testable deterministically, without a live
+// DispatchSourceTimer.
 //
-// NOTE on scope: this suite deliberately does NOT attempt an end-to-end
-// timer-driven integration test (real DispatchSourceTimer firing every 5 s, needing
-// 10+ real seconds of wall-clock wait to observe 2 ticks, plus the fake would need a
-// way to fast-forward or fake time). That would be slow and CI-unfriendly for very
-// little additional coverage: the escalation POLICY itself (this file) is now fully
-// covered by fast, deterministic pure-function tests, and the remaining
-// timer-wiring in startWatchdog()/stopWatchdog() is thin, low-risk plumbing
-// (schedule/cancel a DispatchSourceTimer, call watchdogTick() on fire) not worth a
+// NOTE on scope: this suite deliberately does NOT attempt an end-to-end timer-driven
+// integration test — a real DispatchSourceTimer firing every 5 s would need 10+ real
+// seconds of wall-clock wait to observe 2 ticks, for little additional coverage: the
+// escalation POLICY is fully covered here by fast pure-function tests, and the remaining
+// timer-wiring in startWatchdog()/stopWatchdog() is thin, low-risk plumbing not worth a
 // slow/flaky integration test.
 import Testing
 @testable import eqYourMacbook

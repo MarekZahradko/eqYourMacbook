@@ -146,15 +146,12 @@ func getStreamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? 
 
 // MARK: - Process-output introspection (watchdog discriminator)
 
-/// Whether any process OTHER than `excluding` is currently outputting audio.
-///
-/// Lets the watchdog distinguish a genuine silent-input fault (chain broken while
-/// audio plays) from a benign idle system (nothing playing, zeros are correct).
-///
-/// macOS 14.2+ constants: `kAudioHardwarePropertyProcessObjectList`,
-/// `kAudioProcessPropertyIsRunningOutput`. VERIFY THESE NAMES ON THE FIRST MAC BUILD.
-/// If missing from the SDK: delete this helper and never auto-escalate to
-/// permissionSuspected — keep only the silent rebuild path.
+/// Whether any process OTHER than `excluding` is currently outputting audio. Lets the
+/// watchdog distinguish a genuine silent-input fault (chain broken while audio plays)
+/// from a benign idle system (nothing playing, zeros are correct). Uses macOS 14.2+
+/// constants `kAudioHardwarePropertyProcessObjectList`/`kAudioProcessPropertyIsRunningOutput`
+/// — VERIFY THESE NAMES ON THE FIRST MAC BUILD; if missing from the SDK, delete this
+/// helper and never auto-escalate to permissionSuspected (keep only the silent rebuild path).
 func anyOtherProcessOutputtingAudio(excluding ownProcessObjectID: AudioObjectID) -> Bool {
     var listAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyProcessObjectList,

@@ -7,7 +7,6 @@ struct BiquadCoefficients: Sendable {
     let b0: Double, b1: Double, b2: Double
     let a0: Double, a1: Double, a2: Double
 
-    /// Evaluate the filter's gain in dB at a given frequency.
     func gainDB(at frequency: Double, sampleRate: Double) -> Double {
         let w = 2.0 * .pi * frequency / sampleRate
         let cosW = cos(w), sinW = sin(w)
@@ -36,10 +35,9 @@ enum BiquadResponse {
 
     /// Vicanek (2016) "Matched Second Order Digital Filters": given a fixed a0/a1/a2
     /// denominator, solve the b0/b1/b2 numerator whose squared magnitude exactly hits
-    /// the requested linear-gain² at DC (φ=0), Nyquist (φ=1), and the corner (φ=φ0),
-    /// where φ = sin²(w/2). Sign choice (+√ for the DC-sum, −√ for b1) is pinned by
-    /// testHighShelfMatchesVicanekGainAnchors — the other root sign yields a filter
-    /// with the same |H|² but the wrong phase/pole placement.
+    /// the requested linear-gain² at DC, Nyquist, and the corner (φ = sin²(w/2)).
+    /// Sign choice (+√ for the DC-sum, −√ for b1) is pinned by
+    /// testHighShelfMatchesVicanekGainAnchors — the other root has the same |H|² but wrong phase/poles.
     private static func vicanekMatchedNumerator(
         gainDCSq: Double, gainNyquistSq: Double, gainCornerSq: Double,
         phi0: Double, a0: Double, a1: Double, a2: Double,
@@ -85,15 +83,11 @@ enum BiquadResponse {
     /// Compute biquad coefficients for a band: RBJ cookbook peaking/BPF/notch,
     /// Vicanek matched shelf/LP/HP.
     static func coefficients(for band: EQBand, sampleRate: Double) -> BiquadCoefficients {
-        // Nyquist-safe clamp: independent of whatever validation EQBand's own initializers
-        // enforce — the last line of defense right before the math. Also prevents the
-        // f0 > Nyquist aliasing case (w0 > π wraps the digital frequency axis silently).
+        // Nyquist-safe clamp: last line of defense before the math, independent of
+        // EQBand's own validation — also prevents f0 > Nyquist silently aliasing (w0 > π).
         let f0 = min(Double(band.frequency), sampleRate * 0.49)
-        // Gain has no meaning for bandPass/notch/lowPass/highPass — the UI already
-        // resets it to 0 for these types, but a hand-edited preset could bypass that;
-        // clamping here keeps A pinned to unity so a stray nonzero gain can't leak into
-        // the peaking-only A-scaling below (bandPass/notch/lowPass/highPass don't use A
-        // in their own coefficient math, but this keeps the invariant explicit).
+        // Gain is meaningless for bandPass/notch/lowPass/highPass; the UI already resets
+        // it to 0 for these, but clamp here too in case a hand-edited preset bypasses that.
         let gain = FilterType.gainless.contains(band.filterType) ? 0.0 : Double(band.gain)
         let bw = Double(max(band.bandwidth, 0.05))
 
@@ -101,13 +95,9 @@ enum BiquadResponse {
         let cosW0 = cos(w0)
         let sinW0 = sin(w0)
 
-        // Bandwidth (octaves) → Q conversion; RBJ audio-EQ-cookbook BW→alpha formula.
-        // Shared pole-placement parameter for ALL filter types below (shelf/LP/HP via
-        // Vicanek matched designs, and peaking/BPF/notch).
-        //
-        // The bandwidth-edge gain match (half the peak gain, in dB) depends only on
-        // alpha/w0 pole placement, not on A — so peaking/BPF/notch reuse this alpha
-        // directly rather than deriving a separate gain-dependent one.
+        // Bandwidth (octaves) → Q → alpha (RBJ cookbook BW→alpha formula). Shared
+        // pole-placement parameter for every filter type below — the bandwidth-edge gain
+        // match depends only on alpha/w0, not on A, so peaking/BPF/notch reuse it directly.
         let sinW0Safe = abs(sinW0) > 1e-10 ? sinW0 : 1e-10
         let Q = 1.0 / (2.0 * sinh(log(2.0) / 2.0 * bw * w0 / sinW0Safe))
         let alpha = sinW0 / (2.0 * Q)
@@ -186,6 +176,74 @@ enum BiquadResponse {
                 a1: -2.0 * cosW0,
                 a2: 1.0 - alpha
             )
+        }
+    }
+
+    /// Display-only coefficients for the UI curve preview: classic RBJ cookbook shelf/LP/HP
+    /// forms (pre-Vicanek), NOT used for audio. `coefficients(for:sampleRate:)`'s Vicanek
+    /// matching can make the curve dip/swing back near Nyquist when the corner sits close
+    /// to it — correct for the signal, but reads as a confusing artifact to a user designing
+    /// by eye. The cookbook form stays monotonic instead. parametric/bandPass/notch don't
+    /// use Vicanek matching, so they're identical to `coefficients(for:sampleRate:)`.
+    static func displayCoefficients(for band: EQBand, sampleRate: Double) -> BiquadCoefficients {
+        let f0 = min(Double(band.frequency), sampleRate * 0.49)
+        let gain = FilterType.gainless.contains(band.filterType) ? 0.0 : Double(band.gain)
+        let bw = Double(max(band.bandwidth, 0.05))
+
+        let w0 = 2.0 * .pi * f0 / sampleRate
+        let cosW0 = cos(w0)
+        let sinW0 = sin(w0)
+
+        let sinW0Safe = abs(sinW0) > 1e-10 ? sinW0 : 1e-10
+        let Q = 1.0 / (2.0 * sinh(log(2.0) / 2.0 * bw * w0 / sinW0Safe))
+        let alpha = sinW0 / (2.0 * Q)
+        let A = pow(10.0, gain / 40.0)
+
+        switch band.filterType {
+        case .lowShelf:
+            let twoSqrtAAlpha = 2.0 * sqrt(A) * alpha
+            return BiquadCoefficients(
+                b0: A * ((A + 1) - (A - 1) * cosW0 + twoSqrtAAlpha),
+                b1: 2.0 * A * ((A - 1) - (A + 1) * cosW0),
+                b2: A * ((A + 1) - (A - 1) * cosW0 - twoSqrtAAlpha),
+                a0: (A + 1) + (A - 1) * cosW0 + twoSqrtAAlpha,
+                a1: -2.0 * ((A - 1) + (A + 1) * cosW0),
+                a2: (A + 1) + (A - 1) * cosW0 - twoSqrtAAlpha
+            )
+
+        case .highShelf:
+            let twoSqrtAAlpha = 2.0 * sqrt(A) * alpha
+            return BiquadCoefficients(
+                b0: A * ((A + 1) + (A - 1) * cosW0 + twoSqrtAAlpha),
+                b1: -2.0 * A * ((A - 1) + (A + 1) * cosW0),
+                b2: A * ((A + 1) + (A - 1) * cosW0 - twoSqrtAAlpha),
+                a0: (A + 1) - (A - 1) * cosW0 + twoSqrtAAlpha,
+                a1: 2.0 * ((A - 1) - (A + 1) * cosW0),
+                a2: (A + 1) - (A - 1) * cosW0 - twoSqrtAAlpha
+            )
+
+        case .lowPass:
+            return BiquadCoefficients(
+                b0: (1.0 - cosW0) / 2.0,
+                b1: 1.0 - cosW0,
+                b2: (1.0 - cosW0) / 2.0,
+                a0: 1.0 + alpha,
+                a1: -2.0 * cosW0,
+                a2: 1.0 - alpha
+            )
+
+        case .highPass:
+            return BiquadCoefficients(
+                b0: (1.0 + cosW0) / 2.0,
+                b1: -(1.0 + cosW0),
+                b2: (1.0 + cosW0) / 2.0,
+                a0: 1.0 + alpha,
+                a1: -2.0 * cosW0,
+                a2: 1.0 - alpha
+            )
+
+        case .parametric, .bandPass, .notch:
+            return coefficients(for: band, sampleRate: sampleRate)
         }
     }
 }

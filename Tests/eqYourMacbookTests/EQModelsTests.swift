@@ -16,11 +16,9 @@ import Foundation
     @Test func mbaPresetHasTwoBands() {
         let preset = EQPresetData.mbaTameTheHighs
         #expect(preset.bands.count == 2)
-        // high-shelf at 8 kHz
         #expect(preset.bands[0].filterType == .highShelf)
         #expect(preset.bands[0].frequency == 8000)
         #expect(preset.bands[0].gain == -4)
-        // peaking at 2.5 kHz
         #expect(preset.bands[1].filterType == .parametric)
         #expect(preset.bands[1].frequency == 2500)
         #expect(preset.bands[1].gain == -2)
@@ -35,10 +33,10 @@ import Foundation
     }
 
     @Test func qOctavesConversion() {
-        // Independent anchor: BW = 2*asinh(1/(2Q))/ln(2). For Q=1.0, asinh(0.5) ≈
-        // 0.4812118, so BW ≈ 2*0.4812118/0.6931472 ≈ 1.388484 octaves. A pure
-        // round-trip (below) can't catch two consistently-wrong mutual inverses,
-        // so this hand-computed value anchors the actual formula.
+        // Independent anchor: BW = 2*asinh(1/(2Q))/ln(2). For Q=1.0 this gives
+        // BW ≈ 1.388484 octaves. A pure round-trip (below) can't catch two
+        // consistently-wrong mutual inverses, so this hand-computed value anchors
+        // the actual formula.
         let q: Float = 1.0
         let oct = EQBand.qToOctaves(q)
         #expect(abs(oct - 1.388484) <= 1e-4)

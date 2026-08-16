@@ -27,12 +27,11 @@ enum EngineState: Equatable {
 
     // Shared, short-TTL-cached answer to "is any OTHER process outputting audio right
     // now?", consulted by every engine's watchdog tick (see EQDeviceEngine+Watchdog.swift).
-    // All engines in this single-process app would compute the IDENTICAL CoreAudio
-    // answer independently (same ownProcessObjectID, same process list) on their own
-    // independent 5 s timers — the delegate (one OutputDeviceEQCoordinator instance
-    // fanning out to every engine) memoizes this for a short window instead. Same
-    // semantics as the free function `anyOtherProcessOutputtingAudio(excluding:)` in
-    // CoreAudioHelpers.swift, which this should defer to on a cache miss.
+    // All engines would otherwise compute the IDENTICAL CoreAudio answer independently on
+    // their own 5 s timers, so the delegate (one OutputDeviceEQCoordinator fanning out to
+    // every engine) memoizes it for a short window instead — same semantics as the free
+    // function `anyOtherProcessOutputtingAudio(excluding:)` in CoreAudioHelpers.swift,
+    // which this should defer to on a cache miss.
     func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool
 }
 
@@ -42,22 +41,21 @@ enum EngineState: Equatable {
 // RT state the IOProc touches lives in a per-instance `EQDeviceRTContext`
 // (see EQDeviceRTContext.swift).
 //
-// NOTE: the tap is a `stereoGlobalTapButExcludeProcesses` GLOBAL tap — it captures
-// ALL system audio (minus this app's own process), not audio specific to this device.
-// So with N devices enabled, N taps all see the same source signal, each independently
-// EQ'd and routed to its own aggregate/IOProc. Intentional: the product is "apply this
-// app's EQ to this output," not per-device source routing.
+// NOTE: the tap is a `stereoGlobalTapButExcludeProcesses` GLOBAL tap — it captures ALL
+// system audio (minus this app's own process), not audio specific to this device. So with
+// N devices enabled, N taps all see the same source signal, each independently EQ'd and
+// routed to its own aggregate/IOProc. Intentional: the product is "apply this app's EQ to
+// this output," not per-device source routing.
 //
-// Split across files: stored state, init, stop()/teardown here; start-up
-// (start/performStart/finishStart/failStart/PID translation) in
+// Split across files: stored state, init, stop()/teardown here; start-up in
 // EQDeviceEngine+Lifecycle.swift; live coefficient updates/coalescing/bypass in
 // EQDeviceEngine+LiveUpdate.swift; RT-scratch/biquad-setup lifecycle in
-// EQDeviceEngine+RTState.swift; watchdog in EQDeviceEngine+Watchdog.swift; sleep/wake
-// in EQDeviceEngine+SleepWake.swift. Extensions can't hold stored properties, so all
-// state lives here even though some of it is only touched from the extension files
-// (hence several properties are `internal` rather than `private`, and `state`'s own
-// transitions from other files go through the `transition(to:)` hook below rather than
-// widening its `private(set)` setter beyond this file).
+// EQDeviceEngine+RTState.swift; watchdog in EQDeviceEngine+Watchdog.swift; sleep/wake in
+// EQDeviceEngine+SleepWake.swift. Extensions can't hold stored properties, so all state
+// lives here even though some of it is only touched from extension files (hence several
+// properties are `internal` rather than `private`, and `state`'s own transitions from
+// other files go through the `transition(to:)` hook below rather than widening its
+// `private(set)` setter beyond this file).
 @MainActor final class EQDeviceEngine {
 
     weak var delegate: EQDeviceEngineDelegate?
@@ -69,8 +67,8 @@ enum EngineState: Equatable {
     }
 
     /// State-transition hook for the extension files: `state`'s setter is `private`
-    /// (matching docs/CONTRACT.md's `private(set) var state`, which only same-file
-    /// extensions can satisfy), so EQDeviceEngine+Lifecycle.swift's finishStart()/
+    /// (matching docs/CONTRACT.md's `private(set) var state`, satisfiable only from
+    /// same-file extensions), so EQDeviceEngine+Lifecycle.swift's finishStart()/
     /// failStart() would otherwise have no way to drive a transition. Kept `internal`
     /// like the rest of the cross-file-touched surface in this class.
     func transition(to newState: EngineState) {
@@ -105,10 +103,10 @@ enum EngineState: Equatable {
     var currentBands: [EQBand] = []
     // Fallback used both as the initial value below and when the device read in
     // performStart() fails/returns 0; kept as one named constant rather than two
-    // independent literals. Unrelated to EQCurveView.UIConstants.referenceSampleRate,
-    // which is a deliberately-decoupled UI-only approximation (see its own comment).
-    // Both read from EQDeviceEngine+Lifecycle.swift's performStart() and
-    // EQDeviceEngine+LiveUpdate.swift's flushPendingUpdate() → internal.
+    // independent literals. Unrelated to EQCurveView.UIConstants.referenceSampleRate, a
+    // deliberately-decoupled UI-only approximation (see its own comment). Both read from
+    // EQDeviceEngine+Lifecycle.swift's performStart() and EQDeviceEngine+LiveUpdate.swift's
+    // flushPendingUpdate() → internal.
     static let fallbackSampleRate: Double = 48_000
     var currentSampleRate: Double = EQDeviceEngine.fallbackSampleRate
 
@@ -128,12 +126,11 @@ enum EngineState: Equatable {
     // racing the first into a double rebuild. Touched by EQDeviceEngine+Watchdog.swift.
     var rebuildInProgress = false
 
-    // Coalescing of update(bands:). Sliders fire ~60 Hz; store the latest bands and
-    // apply at most once per ~50 ms (latest-wins). `coalesceScheduled` guards against
-    // scheduling more than one pending apply. Both vars are also written from
-    // gainStagingEnabled's didSet below (a stored property, so it can't move to
-    // EQDeviceEngine+LiveUpdate.swift) as well as from that extension file itself →
-    // internal.
+    // Coalescing of update(bands:). Sliders fire ~60 Hz; store the latest bands and apply
+    // at most once per ~50 ms (latest-wins). `coalesceScheduled` guards against scheduling
+    // more than one pending apply. Both vars are also written from gainStagingEnabled's
+    // didSet below (a stored property, so it can't move to EQDeviceEngine+LiveUpdate.swift)
+    // as well as from that extension file itself → internal.
     static let coalesceInterval: TimeInterval = 0.050
     var pendingUpdateBands: [EQBand]?
     var coalesceScheduled = false
@@ -167,23 +164,22 @@ enum EngineState: Equatable {
 
     // MARK: - isBypassed (RT-read atomic flag)
 
-    /// Main-actor SSOT for the bypass intent. The RT flag (rtContext.bypass) mirrors it
-    /// but is zeroed by releaseRTState() on every teardown/rebuild; this stored value
-    /// survives, so finishStart() can re-publish it. The `isBypassed` computed property
-    /// wrapping this lives in EQDeviceEngine+LiveUpdate.swift (a computed property, so
-    /// it's free to move even though its backing store can't) → internal.
+    /// Main-actor SSOT for the bypass intent. The RT flag (rtContext.bypass) mirrors it but
+    /// is zeroed by releaseRTState() on every teardown/rebuild; this stored value survives,
+    /// so finishStart() can re-publish it. The `isBypassed` computed property wrapping this
+    /// lives in EQDeviceEngine+LiveUpdate.swift, free to move even though its backing store
+    /// can't → internal.
     var bypassIntent = false
 
     // MARK: - Gain-staging
 
     /// Auto-compensation for positive band gain: attenuates the overall output by the
-    /// largest positive non-muted band gain, so a boosted band can't clip. Never boosts;
-    /// disabled → no compensation at all. Recomputed via the normal coalesced update path
-    /// (masterGainDB(for:enabled:) is read at every installBiquadSetup/flushPendingUpdate
-    /// call), so flipping this just needs a coefficient recompute, not a restart.
-    ///
-    /// Stays a stored property here (extensions can't hold stored properties) even
-    /// though its didSet drives EQDeviceEngine+LiveUpdate.swift's coalescing machinery.
+    /// largest positive non-muted band gain, so a boosted band can't clip; never boosts,
+    /// and disabled means no compensation at all. Recomputed via the normal coalesced
+    /// update path (masterGainDB(for:enabled:) is read at every installBiquadSetup/
+    /// flushPendingUpdate call), so flipping this just needs a coefficient recompute, not
+    /// a restart. Stays a stored property here (extensions can't hold stored properties)
+    /// even though its didSet drives EQDeviceEngine+LiveUpdate.swift's coalescing machinery.
     var gainStagingEnabled: Bool = true {
         didSet {
             guard oldValue != gainStagingEnabled, case .running = state else { return }

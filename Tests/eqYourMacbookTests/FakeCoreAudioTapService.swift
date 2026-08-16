@@ -1,19 +1,14 @@
 // Controllable double for CoreAudioTapServicing (see Sources/Engine/CoreAudioTapServicing.swift).
-// Lets a test:
-//   - simulate any single call in EQDeviceEngine's start/stop path succeeding or failing,
-//     independently, with a chosen OSStatus;
-//   - simulate the aggregate device's reported stream format / nominal sample rate
-//     (needed for performStart()'s format-verification step — see CONTRACT.md's updated
-//     CoreAudioTapServicing paragraph for why this had to be added to the seam);
-//   - inspect the exact call sequence (teardown-order assertions per CONTRACT.md);
-//   - hook any individual call to peek at engine/context state at that precise moment
-//     (used by the bypass-ordering regression test);
-//   - and, the single most important capability: capture the real IOProc block
-//     (`AudioDeviceIOBlock`) that EQDeviceEngine hands to
-//     `createIOProcIDWithBlock`, built by the REAL production `makeIOBlock` factory
-//     (EQIOProcFactory.swift) — so a test can invoke it directly with synthetic
-//     AudioBufferLists and exercise the actual RT callback code, not a re-implementation
-//     of it.
+// Lets a test: simulate any single call in EQDeviceEngine's start/stop path succeeding or
+// failing independently with a chosen OSStatus; simulate the aggregate device's reported
+// stream format / nominal sample rate (needed for performStart()'s format-verification
+// step — see CONTRACT.md's CoreAudioTapServicing paragraph); inspect the exact call
+// sequence (teardown-order assertions per CONTRACT.md); hook any individual call to peek
+// at engine/context state at that precise moment (used by the bypass-ordering regression
+// test); and, most importantly, capture the real IOProc block (`AudioDeviceIOBlock`) that
+// EQDeviceEngine hands to `createIOProcIDWithBlock`, built by the REAL production
+// `makeIOBlock` factory (EQIOProcFactory.swift) — so a test can invoke it directly with
+// synthetic AudioBufferLists and exercise the actual RT callback code.
 
 import AudioToolbox
 import CoreAudio
