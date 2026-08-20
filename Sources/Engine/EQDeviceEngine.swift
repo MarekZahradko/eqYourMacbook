@@ -106,6 +106,21 @@ enum EngineState: Equatable {
     // Touched by EQDeviceEngine+Watchdog.swift → internal.
     var ownProcessObjectID = AudioObjectID(kAudioObjectUnknown)
 
+    // Processes excluded from the current tap: ourselves plus every process holding
+    // exclusive (hog-mode) access to some output device (see HogModeMonitor.swift for
+    // why the latter must be excluded). Cached so the hog-mode monitor and the watchdog
+    // can tell whether the live set has drifted from what the running tap was built
+    // with, and rebuild only then. Touched by EQDeviceEngine+Lifecycle.swift and
+    // EQDeviceEngine+Watchdog.swift -> internal.
+    var excludedProcessObjectIDs: [AudioObjectID] = []
+
+    // Live hog-mode watcher, started once a run is built and stopped by stop(). Injected
+    // at init (defaulting to a real one) rather than created on demand so tests can pass
+    // nil and avoid registering live CoreAudio listeners; with no monitor the watchdog's
+    // 5 s staleness backstop still corrects the exclusion set, just less promptly.
+    // Touched by EQDeviceEngine+Lifecycle.swift (start) and stop() below.
+    let hogModeMonitor: HogModeMonitor?
+
     // Last bands and the sample rate the current setup was built for — needed to
     // rebuild coefficients on update() and to rebuild the whole stack on watchdog.
     // currentBands is read by rebuild() in EQDeviceEngine+Watchdog.swift → internal.
@@ -160,7 +175,9 @@ enum EngineState: Equatable {
 
     init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
          tapService: CoreAudioTapServicing = LiveCoreAudioTapService(),
-         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         hogModeMonitor: HogModeMonitor? = HogModeMonitor()) {
+        self.hogModeMonitor = hogModeMonitor
         self.deviceID = deviceID
         self.deviceUID = deviceUID
         self.deviceName = deviceName
@@ -220,6 +237,7 @@ enum EngineState: Equatable {
         // .failed start with half-built handles also gets fully cleaned.
         stopWatchdog()
         removeWakeObserver()
+        removeHogModeMonitor()
         teardownCoreAudio()
         releaseRTState()
 

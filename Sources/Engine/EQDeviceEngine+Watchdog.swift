@@ -32,7 +32,12 @@ extension EQDeviceEngine {
     // called from EQDeviceEngine+SleepWake.swift's wake handler" comment below. Production
     // call site is still only startWatchdog()'s timer handler above.
     func watchdogTick() {
-        guard case .running = state, let context = rtContext else { return }
+        guard case .running = state else { return }
+        // Backstop for an exclusion-set change whose HogModeMonitor callback was
+        // swallowed by rebuild()'s reentrancy guard (or arrived between phase A and
+        // phase B). If it rebuilds, this tick's RT state is gone — skip the rest.
+        if rebuildIfTapExclusionsStale() { return }
+        guard let context = rtContext else { return }
         // rtAcquireFence() pairs with the RT thread's rtReleaseFence() after writing
         // callbackCounter (EQIOProcFactory.swift) — guarantees this read observes the
         // RT thread's latest write rather than a stale cached value.

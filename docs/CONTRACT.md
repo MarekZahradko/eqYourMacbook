@@ -67,7 +67,8 @@ enum EngineState: Equatable {
 
     init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
          tapService: CoreAudioTapServicing = LiveCoreAudioTapService(),
-         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter)
+         wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         hogModeMonitor: HogModeMonitor? = HogModeMonitor())
 
     // Idempotent. Builds: own-PID-excluded global tap (mute-on-tap) → private
     // aggregate (THIS instance's deviceUID = main sub-device + tap in CREATION
@@ -90,6 +91,29 @@ enum EngineState: Equatable {
     var gainStagingEnabled: Bool { get set }
 }
 ```
+
+### Tap process exclusions (hog mode)
+
+The tap excludes our own process AND every process holding exclusive (hog-mode) access
+to any output device — `hoggingProcessObjectIDs()` (`CoreAudioHelpers.swift`, behind the
+`CoreAudioTapServicing` seam), merged by the pure
+`EQDeviceEngine.tapExcludedProcessObjects(own:hoggers:)` (deduplicated, `kAudioObjectUnknown`
+dropped, sorted — the staleness comparisons depend on that stability).
+
+Not an optimization: a hog holder plays to the device it locked while macOS moves the
+default-output route elsewhere, so an engine legitimately starts for the (still enabled,
+now-default) other device and the global tap would capture the hog holder anyway,
+`.mutedWhenTapped` silencing it on the device it hogged and re-rendering it through our
+aggregate. Observed 2026-08-19 with foobar2000's exclusive mode on a USB S/PDIF DAC.
+
+`CATapDescription`'s exclusion list is fixed at creation time, so a change to the set
+requires a full rebuild. `HogModeMonitor` (`Sources/Engine/HogModeMonitor.swift`) reports
+changes: one `kAudioDevicePropertyHogMode` listener per output device, re-synced by a
+`kAudioHardwarePropertyDevices` listener. The engine starts it in phase B and stops it in
+`stop()`; a `nil` monitor (tests) disables live listeners without changing behavior
+otherwise. Both the monitor callback and every watchdog tick (backstop for a callback
+swallowed by `rebuild()`'s reentrancy guard) go through
+`rebuildIfTapExclusionsStale()`, which rebuilds only when the live set actually differs.
 
 `CoreAudioTapServicing` (`Sources/Engine/CoreAudioTapServicing.swift`) is a narrow testability
 seam wrapping the CoreAudio calls `start()`/`stop()` make (create/destroy tap,

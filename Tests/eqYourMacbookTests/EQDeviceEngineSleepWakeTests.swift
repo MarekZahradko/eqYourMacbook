@@ -32,7 +32,8 @@ import Testing
         let fake = FakeCoreAudioTapService()
         let notificationCenter = NotificationCenter()
         let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device",
-                                    tapService: fake, wakeNotificationCenter: notificationCenter)
+                                    tapService: fake, wakeNotificationCenter: notificationCenter,
+                                    hogModeMonitor: nil)
         let delegate = RecordingEngineDelegate()
         engine.delegate = delegate
 
@@ -53,7 +54,7 @@ import Testing
         let addedCalls = Array(fake.callLog[callsBeforeWake...])
         #expect(addedCalls == [
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
-            .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
+            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
             .createIOProcIDWithBlock, .startDevice,
         ], "wake must have driven a full stop+start rebuild (CONTRACT.md teardown order), not merely re-touched the existing stack")
         #expect(engine.state == .running)
@@ -79,7 +80,8 @@ import Testing
         let fake = FakeCoreAudioTapService()
         let notificationCenter = NotificationCenter()
         let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device",
-                                    tapService: fake, wakeNotificationCenter: notificationCenter)
+                                    tapService: fake, wakeNotificationCenter: notificationCenter,
+                                    hogModeMonitor: nil)
         let delegate = RecordingEngineDelegate()
         engine.delegate = delegate
 

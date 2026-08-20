@@ -28,6 +28,7 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         case stopDevice
         case getStreamFormat
         case getDeviceNominalSampleRate
+        case hoggingProcessObjectIDs
     }
 
     // MARK: - Call log (order + count) — read this to assert CONTRACT.md's teardown order.
@@ -58,6 +59,16 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
     // default, so a test only needs to override what it's specifically probing.
     var streamFormatToReturn: AudioStreamBasicDescription? = FakeCoreAudioTapService.validFloat32StereoFormat
     var nominalSampleRateToReturn: Double = 48_000
+
+    /// Hog-mode holders reported to performStart()'s tap-exclusion step. Default: none
+    /// hogged, matching an idle system. A test flips this mid-run to simulate another
+    /// app taking (or releasing) exclusive access to a device.
+    var hoggingProcessObjectsToReturn: [AudioObjectID] = []
+
+    /// The exclusion list of the most recently created tap — lets a test assert exactly
+    /// which processes were excluded (CATapDescription exposes no readable accessor
+    /// contract we want to depend on, so it is captured here at creation time).
+    private(set) var lastTapExcludedProcesses: [AudioObjectID]?
 
     static var validFloat32StereoFormat: AudioStreamBasicDescription {
         AudioStreamBasicDescription(
@@ -92,6 +103,7 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         let id = nextObjectID; nextObjectID += 1
         tapID = id
         lastCreatedTapID = id
+        lastTapExcludedProcesses = description.processes
         return noErr
     }
 
@@ -167,5 +179,11 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         callLog.append(.getDeviceNominalSampleRate)
         onCall?(.getDeviceNominalSampleRate)
         return nominalSampleRateToReturn
+    }
+
+    func hoggingProcessObjectIDs() -> [AudioObjectID] {
+        callLog.append(.hoggingProcessObjectIDs)
+        onCall?(.hoggingProcessObjectIDs)
+        return hoggingProcessObjectsToReturn
     }
 }

@@ -38,11 +38,18 @@ extension EQDeviceEngine {
             //    on the engine so the watchdog can also exclude us.
             ownProcessObjectID = try translateOwnPIDToProcessObject()
 
-            // 2. Global tap, our process excluded, muted-on-tap.
+            // 2. Global tap, muted-on-tap, excluding our own process AND every process
+            //    holding exclusive (hog-mode) access to an output device. The latter is
+            //    not an optimization: a hog holder plays to the device it locked while
+            //    macOS re-routes the default output elsewhere, so without the exclusion
+            //    this global tap would mute it on that device and re-render its audio
+            //    through our aggregate on a different one (foobar2000 exclusive mode on a
+            //    USB DAC came out of the built-in speakers). See HogModeMonitor.swift.
             tapUUID = UUID()
-            let excludeProcesses: [AudioObjectID] = ownProcessObjectID != kAudioObjectUnknown
-                ? [ownProcessObjectID] : []
-            let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludeProcesses)
+            excludedProcessObjectIDs = Self.tapExcludedProcessObjects(
+                own: ownProcessObjectID, hoggers: tapService.hoggingProcessObjectIDs())
+            let tapDesc = CATapDescription(
+                stereoGlobalTapButExcludeProcesses: excludedProcessObjectIDs)
             tapDesc.uuid = tapUUID
             // ADJUDICATED (M1 kill -9 test): .mutedWhenTapped keeps audio playing
             // uninterrupted on a crash — the fail-safe we want. Do NOT switch to
@@ -170,6 +177,7 @@ extension EQDeviceEngine {
 
             startWatchdog()
             installWakeObserver()
+            installHogModeMonitor()
             transition(to: .running)
         } catch {
             failStart(error)
@@ -188,20 +196,52 @@ extension EQDeviceEngine {
     // MARK: - PID translation
 
     private func translateOwnPIDToProcessObject() throws -> AudioObjectID {
-        var translateAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var myPID = getpid()
-        var processObjectID = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        try caCheck(
-            AudioObjectGetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject), &translateAddress,
-                UInt32(MemoryLayout<pid_t>.size), &myPID,
-                &size, &processObjectID),
-            "Failed to translate PID to process object")
-        return processObjectID
+        try translatePIDToProcessObject(getpid())
+    }
+
+    // MARK: - Tap process exclusions
+
+    /// Pure: the exclusion list a tap should be built with, given our own process object
+    /// and the current hog-mode holders. Unknown entries are dropped and the result is
+    /// deduplicated and sorted, so two calls observing the same processes in a different
+    /// HAL-returned order compare equal — the staleness checks in HogModeMonitor's
+    /// callback and the watchdog rely on that to avoid rebuild loops.
+    nonisolated static func tapExcludedProcessObjects(
+        own: AudioObjectID, hoggers: [AudioObjectID]
+    ) -> [AudioObjectID] {
+        var set = Set(hoggers)
+        set.insert(own)
+        set.remove(AudioObjectID(kAudioObjectUnknown))
+        return set.sorted()
+    }
+
+    /// Installs (idempotently) the hog-mode watcher that keeps the tap's exclusion list
+    /// current. Rebuilds the whole stack when the live set drifts from what the running
+    /// tap was built with — CATapDescription's exclusion list is fixed at creation time,
+    /// so there is no cheaper way to change it.
+    func installHogModeMonitor() {
+        hogModeMonitor?.start { [weak self] in
+            self?.rebuildIfTapExclusionsStale()
+        }
+    }
+
+    func removeHogModeMonitor() {
+        hogModeMonitor?.stop()
+    }
+
+    /// Shared by the hog-mode monitor's callback and the watchdog's 5 s backstop tick
+    /// (which covers a change that arrives while `rebuildInProgress` is swallowing
+    /// callbacks). No-ops unless the exclusion set actually changed.
+    /// Returns whether a rebuild was actually started, so the watchdog can skip the rest
+    /// of a tick whose RT state has just been replaced underneath it.
+    @discardableResult
+    func rebuildIfTapExclusionsStale() -> Bool {
+        guard case .running = state else { return false }
+        let live = Self.tapExcludedProcessObjects(
+            own: ownProcessObjectID, hoggers: tapService.hoggingProcessObjectIDs())
+        guard live != excludedProcessObjectIDs else { return false }
+        os_log(.default, log: engineLog, "hog-mode exclusions changed, rebuilding tap")
+        rebuild()
+        return true
     }
 }

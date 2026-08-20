@@ -144,6 +144,59 @@ func getStreamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? 
     getProperty(deviceID, selector: kAudioDevicePropertyStreamFormat, scope: kAudioObjectPropertyScopeOutput)
 }
 
+// MARK: - Hog mode (exclusive access) introspection
+//
+// A process that takes hog mode on a device (foobar2000's "exclusive" playback, and
+// any other bit-perfect player) plays to THAT device while macOS moves the default
+// output route elsewhere. Our tap is a GLOBAL process tap: it would capture such a
+// process anyway and — with .mutedWhenTapped — silence it on the device it hogged,
+// re-rendering its audio through our aggregate on a completely different device.
+// So every hog holder is excluded from the tap; see EQDeviceEngine+Lifecycle.swift.
+
+/// PID holding exclusive (hog-mode) access to `deviceID`'s output, or -1 if the device
+/// is not hogged. Never throws — callers scan every device and one bad read must not
+/// abort the scan (same convention as getDeviceTransportType).
+func getDeviceHogModePID(_ deviceID: AudioDeviceID) -> pid_t {
+    getProperty(deviceID, selector: kAudioDevicePropertyHogMode,
+                scope: kAudioObjectPropertyScopeOutput) ?? -1
+}
+
+/// Translate a PID to its CoreAudio process object (the identifier
+/// `CATapDescription`'s exclusion list is keyed by).
+func translatePIDToProcessObject(_ pid: pid_t) throws -> AudioObjectID {
+    var translateAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var pid = pid
+    var processObjectID = AudioObjectID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    try caCheck(
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &translateAddress,
+            UInt32(MemoryLayout<pid_t>.size), &pid,
+            &size, &processObjectID),
+        "Failed to translate PID to process object")
+    return processObjectID
+}
+
+/// Process objects of every process currently holding hog mode on ANY output device.
+/// Unresolvable PIDs are dropped rather than failing the scan — an exclusion we can't
+/// express is strictly better than no tap at all.
+func hoggingProcessObjectIDs() -> [AudioObjectID] {
+    guard let devices = try? getAllDeviceIDs() else { return [] }
+    var result: [AudioObjectID] = []
+    for device in devices where deviceHasOutputStreams(device) {
+        let pid = getDeviceHogModePID(device)
+        guard pid != -1, pid != getpid() else { continue }
+        guard let object = try? translatePIDToProcessObject(pid),
+              object != kAudioObjectUnknown else { continue }
+        result.append(object)
+    }
+    return result
+}
+
 // MARK: - Process-output introspection (watchdog discriminator)
 
 /// Whether any process OTHER than `excluding` is currently outputting audio. Lets the

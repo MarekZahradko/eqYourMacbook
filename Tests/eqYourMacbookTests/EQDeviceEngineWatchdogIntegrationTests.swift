@@ -32,7 +32,7 @@ import Testing
 
     @Test func twoConsecutiveSilentTicksDriveARealRebuildAndUnconditionalRunningNotification() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
         let delegate = RecordingEngineDelegate()
         delegate.othersOutputtingAnswer = true
         engine.delegate = delegate
@@ -65,8 +65,10 @@ import Testing
         // this much of the CoreAudio call sequence must already have happened — phase B
         // (createIOProcIDWithBlock, startDevice) is still deferred ~0.3 s at this point.
         #expect(Array(fake.callLog[callsBeforeRebuild...]) == [
+            .hoggingProcessObjectIDs,
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
-            .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
+            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .getDeviceNominalSampleRate,
         ], "watchdogTick() must have driven a real rebuild() through to phase A synchronously")
         #expect(delegate.states == [.running],
                 "CONTRACT.md: a silent rebuild fires no delegate noise by itself — only the later unconditional re-notify, once phase B has actually completed")
@@ -77,8 +79,10 @@ import Testing
         try await Task.sleep(for: .milliseconds(700))
 
         #expect(Array(fake.callLog[callsBeforeRebuild...]) == [
+            .hoggingProcessObjectIDs,
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
-            .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
+            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .getDeviceNominalSampleRate,
             .createIOProcIDWithBlock, .startDevice,
         ])
         #expect(engine.state == .running)
@@ -99,7 +103,7 @@ import Testing
 
     @Test func rebuildReentrancyGuardBlocksASecondConcurrentRebuild() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
         engine.start(bands: [testBand])
         try await Task.sleep(for: .milliseconds(400))
         #expect(engine.state == .running)

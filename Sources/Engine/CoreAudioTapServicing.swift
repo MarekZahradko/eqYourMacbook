@@ -33,6 +33,12 @@ protocol CoreAudioTapServicing {
     // behavior is unchanged.
     func getStreamFormat(_ deviceID: AudioObjectID) -> AudioStreamBasicDescription?
     func getDeviceNominalSampleRate(_ deviceID: AudioObjectID) -> Double
+
+    // performStart()'s step 2 needs the set of processes holding exclusive (hog-mode)
+    // access so it can exclude them from the global tap; the watchdog re-reads it as a
+    // staleness backstop. Behind the seam for the same reason as the two reads above:
+    // otherwise no test could drive the exclusion logic without a real hogged device.
+    func hoggingProcessObjectIDs() -> [AudioObjectID]
 }
 
 /// Default live implementation: calls the real CoreAudio/AudioToolbox APIs directly.
@@ -70,5 +76,8 @@ struct LiveCoreAudioTapService: CoreAudioTapServicing {
     }
     func getDeviceNominalSampleRate(_ deviceID: AudioObjectID) -> Double {
         eqYourMacbook.getDeviceNominalSampleRate(deviceID)
+    }
+    func hoggingProcessObjectIDs() -> [AudioObjectID] {
+        eqYourMacbook.hoggingProcessObjectIDs()
     }
 }
