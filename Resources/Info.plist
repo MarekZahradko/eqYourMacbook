@@ -9,9 +9,9 @@
     <key>CFBundleDisplayName</key>
     <string>eqYourMacbook</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>1.0.1</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -21,7 +21,7 @@
     <!-- No Dock icon — menu bar only app -->
     <key>LSUIElement</key>
     <true/>
-    <!-- NSAudioCaptureUsageDescription must be set manually; Xcode's dropdown doesn't expose it (PLAN.md §2 Permission) -->
+    <!-- NSAudioCaptureUsageDescription must be set manually; Xcode's dropdown doesn't expose it (CLAUDE.md § Invariants: TCC) -->
     <key>NSAudioCaptureUsageDescription</key>
     <string>eqYourMacbook captures system audio to apply the equalizer to the built-in speakers.</string>
     <key>NSPrincipalClass</key>
