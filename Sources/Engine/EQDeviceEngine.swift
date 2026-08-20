@@ -12,7 +12,7 @@ import os.log
 
 let engineLog = OSLog(subsystem: "com.zdenekkops.eqyourmacbook", category: "engine")
 
-// MARK: - Engine state & delegate (SSOT: docs/CONTRACT.md)
+// MARK: - Engine state & delegate (the Engine <-> App surface)
 
 enum EngineState: Equatable {
     case stopped              // no tap, zero footprint
@@ -43,7 +43,7 @@ enum EngineState: Equatable {
 //
 // NOTE: the tap is a `stereoGlobalTapButExcludeProcesses` GLOBAL tap — it captures ALL
 // system audio (minus this app's own process), not audio specific to this device. This is
-// WHY at most one engine may ever run at once (docs/CONTRACT.md's IMPORTANT note):
+// WHY at most one engine may ever run at once (CLAUDE.md § Invariants):
 // there's no device-scoped tap/mute mode, so a second concurrent tap would mute
 // audio system-wide while nothing plays through the one device actually routed to.
 // Intentional scope: the product is "apply this app's EQ to the current output," not
@@ -69,7 +69,7 @@ enum EngineState: Equatable {
     }
 
     /// State-transition hook for the extension files: `state`'s setter is `private`
-    /// (matching docs/CONTRACT.md's `private(set) var state`, satisfiable only from
+    /// (`state` is deliberately `private(set)`, satisfiable only from
     /// same-file extensions), so EQDeviceEngine+Lifecycle.swift's finishStart()/
     /// failStart() would otherwise have no way to drive a transition. Kept `internal`
     /// like the rest of the cross-file-touched surface in this class.
@@ -216,7 +216,7 @@ enum EngineState: Equatable {
         }
     }
 
-    // MARK: - stop() — strict teardown order (CONTRACT.md)
+    // MARK: - stop() — strict teardown order (CLAUDE.md § Invariants)
 
     /// Idempotent. AudioDeviceStop → AudioDeviceDestroyIOProcID →
     /// AudioHardwareDestroyAggregateDevice → AudioHardwareDestroyProcessTap →

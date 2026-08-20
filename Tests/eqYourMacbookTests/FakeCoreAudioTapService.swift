@@ -2,8 +2,8 @@
 // Lets a test: simulate any single call in EQDeviceEngine's start/stop path succeeding or
 // failing independently with a chosen OSStatus; simulate the aggregate device's reported
 // stream format / nominal sample rate (needed for performStart()'s format-verification
-// step — see CONTRACT.md's CoreAudioTapServicing paragraph); inspect the exact call
-// sequence (teardown-order assertions per CONTRACT.md); hook any individual call to peek
+// step — see CoreAudioTapServicing's own doc comments); inspect the exact call
+// sequence (teardown-order assertions per CLAUDE.md § Invariants); hook any individual call to peek
 // at engine/context state at that precise moment (used by the bypass-ordering regression
 // test); and, most importantly, capture the real IOProc block (`AudioDeviceIOBlock`) that
 // EQDeviceEngine hands to `createIOProcIDWithBlock`, built by the REAL production
@@ -31,7 +31,7 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         case hoggingProcessObjectIDs
     }
 
-    // MARK: - Call log (order + count) — read this to assert CONTRACT.md's teardown order.
+    // MARK: - Call log (order + count) — read this to assert CLAUDE.md § Invariants' teardown order.
     private(set) var callLog: [Call] = []
 
     /// Fires at the START of every protocol method, before its simulated effect/return —

@@ -13,7 +13,7 @@
 // observes `advancing == true`) while leaving maxAbsInput at its post-start value of 0
 // (reset by performStart() and never otherwise touched here), and by pointing the
 // delegate's anyOtherProcessOutputtingAudio(excluding:) answer at `true` — the two
-// conditions CONTRACT.md requires together for a tick to count as suspicious silence
+// conditions CLAUDE.md § Invariants requires together for a tick to count as suspicious silence
 // ("A check counts as silent only when callbacks are advancing AND max == 0 AND some OTHER
 // process is actually outputting audio").
 import AudioToolbox
@@ -27,7 +27,7 @@ import Testing
 
     private let testBand = EQBand(frequency: 1000, gain: 3, bandwidth: 1.0, filterType: .parametric)
 
-    // MARK: - watchdogTick() x2 (consecutive, silent) -> a REAL rebuild() -> CONTRACT.md's
+    // MARK: - watchdogTick() x2 (consecutive, silent) -> a REAL rebuild() -> CLAUDE.md § Invariants'
     // unconditional post-rebuild .running re-notification.
 
     @Test func twoConsecutiveSilentTicksDriveARealRebuildAndUnconditionalRunningNotification() async throws {
@@ -53,7 +53,7 @@ import Testing
         #expect(engine.state == .running, "must not rebuild on a single silent tick")
         #expect(delegate.states == [.running], "no delegate noise on a non-escalating tick")
 
-        // Tick 2: second CONSECUTIVE silent tick -> CONTRACT.md's 2-tick escalation ->
+        // Tick 2: second CONSECUTIVE silent tick -> CLAUDE.md § Invariants' 2-tick escalation ->
         // rebuild() (stop + start), "no delegate noise" for the silent rebuild itself.
         let callsBeforeRebuild = fake.callLog.count
         context.callbackCounter = 2
@@ -71,7 +71,7 @@ import Testing
             .getDeviceNominalSampleRate,
         ], "watchdogTick() must have driven a real rebuild() through to phase A synchronously")
         #expect(delegate.states == [.running],
-                "CONTRACT.md: a silent rebuild fires no delegate noise by itself — only the later unconditional re-notify, once phase B has actually completed")
+                "CLAUDE.md § Invariants: a silent rebuild fires no delegate noise by itself — only the later unconditional re-notify, once phase B has actually completed")
 
         // Wait past rebuild()'s own phase-B deferral (~0.3 s, performStart()'s) AND its
         // separate ~0.35 s unconditional-re-notify deferral (scheduled independently right
@@ -86,7 +86,7 @@ import Testing
             .createIOProcIDWithBlock, .startDevice,
         ])
         #expect(engine.state == .running)
-        // CONTRACT.md: "After a successful silent rebuild the engine fires
+        // CLAUDE.md § Invariants: "After a successful silent rebuild the engine fires
         // didChangeState(.running) UNCONDITIONALLY (bypassing the internal state-equality
         // guard, since state stayed .running throughout the rebuild) so the coordinator
         // knows the chain is healthy again." -> a SECOND .running entry despite state never

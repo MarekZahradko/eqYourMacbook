@@ -1,6 +1,6 @@
 // Enumerates output devices and reports hot-plug changes. The user checks exactly one
 // device to EQ (mutual exclusion in the App layer); that device's engine only actually
-// runs while it's also the OS's current default-output route (CONTRACT.md's
+// runs while it's also the OS's current default-output route (CLAUDE.md § Invariants'
 // "Reconciliation"). OutputDeviceCatalog never starts/stops anything or decides
 // routing — it only reports which devices exist; OutputDeviceEQCoordinator decides
 // policy.
@@ -23,7 +23,7 @@ struct OutputDeviceInfo: Identifiable, Equatable {
     /// Test-only injection hook: lets a test populate `devices` with a synthetic list
     /// WITHOUT ever calling `start()` (which would register a live
     /// `kAudioHardwarePropertyDevices` listener and run `enumerate()` against real
-    /// CoreAudio). `devices`'s setter is `private` (matching docs/CONTRACT.md's
+    /// CoreAudio). `devices`'s setter is `private` (deliberately, matching the
     /// `private(set) var devices`), so this narrow hook mirrors
     /// OutputDeviceEQCoordinator's `setDeviceRows(_:)`/`setEnabledDeviceUIDs(_:)` pattern
     /// (same-file-extension-only widening, not a public setter). Production code never

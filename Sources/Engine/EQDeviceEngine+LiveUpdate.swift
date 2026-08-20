@@ -24,7 +24,7 @@ extension EQDeviceEngine {
 
     // MARK: - update() — live coefficient swap (no restart, no glitch)
 
-    /// Live coefficient swap. CONTRACT allows coalescing; sliders fire ~60 Hz, so we store
+    /// Live coefficient swap. Coalescing is allowed; sliders fire ~60 Hz, so we store
     /// the latest bands (latest-wins) and apply at most once every ~50 ms. The actual
     /// apply hands coefficients to the RT thread, which calls SetTargetsDouble itself (see
     /// flushPendingUpdate / makeIOBlock) — exactly one writer, never racing vDSP_biquadm;

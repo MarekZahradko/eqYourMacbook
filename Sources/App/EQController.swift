@@ -8,7 +8,7 @@ import os.log
 // MARK: - DisplayStatus
 
 /// At most one engine ever runs — the enabled device that's ALSO the OS's current
-/// default-output route (docs/CONTRACT.md's Reconciliation/Engage-policy) — so this
+/// default-output route (CLAUDE.md § Invariants) — so this
 /// is only the aggregate master-switch/health line the footer shows; per-device
 /// running state lives in DeviceRowView instead.
 enum DisplayStatus: Equatable {

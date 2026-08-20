@@ -171,7 +171,7 @@ private final class EngineFactorySpy {
         #expect(coordinator.deviceRows.first(where: { $0.id == syntheticID })?.isRunning == false)
         #expect(statusSnapshots.last?.anyRunning == false)
         let fake = try #require(spy.fakesByDeviceID[syntheticID])
-        // CONTRACT.md's strict teardown order.
+        // CLAUDE.md § Invariants' strict teardown order.
         #expect(fake.callLog.suffix(4) == [
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
         ])
@@ -205,7 +205,7 @@ private final class EngineFactorySpy {
         // The previously-running engine is stopped immediately (no longer enabled).
         #expect(coordinator.engines[routeDeviceID] == nil)
         // The newly-checked device does NOT start: it isn't the live default-output route.
-        // CONTRACT.md's Engage policy: checking a device is independent of it actually
+        // CLAUDE.md § Invariants' route gating: checking a device is independent of it actually
         // running -- the row shows checked but "not yet running".
         #expect(coordinator.engines[otherDeviceID] == nil)
         let otherRow = coordinator.deviceRows.first(where: { $0.id == otherDeviceID })
@@ -214,7 +214,7 @@ private final class EngineFactorySpy {
         let routeRow = coordinator.deviceRows.first(where: { $0.id == routeDeviceID })
         #expect(routeRow?.isChecked == false)
         // Mutual exclusion: a DIFFERENT device (otherDeviceID) is now checked, so every
-        // other row -- routeRow included -- is non-interactable (CONTRACT.md's Engage
+        // other row -- routeRow included -- is non-interactable (CLAUDE.md § Invariants' route gating
         // policy / DeviceRowViewModel.isInteractable's doc comment).
         #expect(routeRow?.isInteractable == false)
     }

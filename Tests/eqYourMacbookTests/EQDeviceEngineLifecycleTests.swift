@@ -1,6 +1,6 @@
 // EQDeviceEngine lifecycle tests, driven entirely through FakeCoreAudioTapService (no
 // real CoreAudio hardware/objects touched). Covers: start() success/failure (state
-// sequence + call order + CONTRACT.md teardown order), live coefficient-update
+// sequence + call order + CLAUDE.md § Invariants teardown order), live coefficient-update
 // coalescing, the bypass-publish-before-startDevice ordering fix, and gain-staging's
 // effect on the REAL RT signal path (via the fake's captured production IOProc block).
 //
@@ -114,7 +114,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         }
         #expect(message.hasPrefix("Could not read aggregate device stream format"))
         // Tap AND aggregate were both created before the format read failed; both must
-        // be torn down, aggregate-before-tap (CONTRACT.md order).
+        // be torn down, aggregate-before-tap (CLAUDE.md § Invariants order).
         #expect(fake.callLog == [
             .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
             .destroyAggregateDevice, .destroyProcessTap,
@@ -140,7 +140,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         ])
     }
 
-    // MARK: - stop(): CONTRACT.md-documented strict teardown order
+    // MARK: - stop(): the strict teardown order (CLAUDE.md § Invariants)
 
     @Test func stopTearsDownInContractOrder() async throws {
         let fake = FakeCoreAudioTapService()

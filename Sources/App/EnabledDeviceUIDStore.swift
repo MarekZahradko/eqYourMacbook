@@ -9,7 +9,7 @@ final class EnabledDeviceUIDStore {
     }
 
     // Injectable for test isolation (mirrors PresetStore's `defaults` seam); every
-    // production call site still gets `.standard`, matching CONTRACT.md's documented
+    // production call site still gets `.standard`, matching the documented
     // persistence store.
     private let defaults: UserDefaults
 

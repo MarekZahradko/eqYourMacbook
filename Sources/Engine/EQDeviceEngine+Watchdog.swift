@@ -6,7 +6,7 @@ import os.log
 
 extension EQDeviceEngine {
 
-    // MARK: - Watchdog (CONTRACT.md)
+    // MARK: - Watchdog (CLAUDE.md § Invariants)
 
     func startWatchdog() {
         stopWatchdog()
@@ -103,7 +103,7 @@ extension EQDeviceEngine {
         /// independent of whether a permission suspicion was active.
         var resetDidRebuildForSilence: Bool
         /// maxAbs > 0 AND a permission suspicion was previously raised — fires the
-        /// idempotent `.running` re-notification (CONTRACT.md's watchdog↔delegate
+        /// idempotent `.running` re-notification (CLAUDE.md § Invariants' watchdog↔delegate
         /// idempotency rule).
         var clearPermissionSuspicion: Bool
         var newConsecutiveSilentChecks: Int

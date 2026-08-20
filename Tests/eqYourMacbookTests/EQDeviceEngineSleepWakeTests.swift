@@ -1,6 +1,6 @@
 // Integration tests for EQDeviceEngine+SleepWake.swift's installWakeObserver()/
 // removeWakeObserver() — the NSWorkspace.didWakeNotification handler that schedules a
-// preventive rebuild ~1 s after wake (CONTRACT.md: "Sleep/wake: engine observes
+// preventive rebuild ~1 s after wake (CLAUDE.md § Invariants: "Sleep/wake: engine observes
 // NSWorkspace.didWakeNotification while running and schedules a rebuild ~1 s after wake").
 // Driven end-to-end through FakeCoreAudioTapService (see EQDeviceEngineLifecycleTests.swift's
 // header for the phase-A/phase-B start() timing background this also relies on).
@@ -56,9 +56,9 @@ import Testing
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
             .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
             .createIOProcIDWithBlock, .startDevice,
-        ], "wake must have driven a full stop+start rebuild (CONTRACT.md teardown order), not merely re-touched the existing stack")
+        ], "wake must have driven a full stop+start rebuild (CLAUDE.md § Invariants teardown order), not merely re-touched the existing stack")
         #expect(engine.state == .running)
-        // CONTRACT.md: after a successful silent/preventive rebuild the engine fires
+        // CLAUDE.md § Invariants: after a successful silent/preventive rebuild the engine fires
         // didChangeState(.running) UNCONDITIONALLY — a SECOND .running entry, even though
         // state never actually left .running from the engine's own perspective (the
         // transition(to:) call inside finishStart() is suppressed by state's didSet

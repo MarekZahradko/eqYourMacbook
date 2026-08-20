@@ -9,7 +9,7 @@
 // stored state, init, and EQDeviceEngineDelegate conformance here. Properties touched
 // only from extension files are `internal` rather than `private`, each commented with
 // which file(s) need the access (same convention as EQDeviceEngine's file split). The
-// two properties CONTRACT.md documents as `private(set)` (`deviceRows`,
+// two properties documented as `private(set)` (`deviceRows`,
 // `enabledDeviceUIDs`) keep that declaration and expose a narrow hook method for
 // extension-file writes instead, mirroring EQDeviceEngine's `transition(to:)`.
 
@@ -62,7 +62,7 @@ struct AggregateEngineStatus: Equatable {
     private(set) var enabledDeviceUIDs: Set<String> = []
 
     /// Hook for +Reconciliation.swift's rebuildDeviceRows() to write `deviceRows`
-    /// without widening its CONTRACT.md-mandated `private(set)` setter.
+    /// without widening its intentional `private(set)` setter.
     func setDeviceRows(_ rows: [DeviceRowViewModel]) {
         deviceRows = rows
     }

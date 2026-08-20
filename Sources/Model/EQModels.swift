@@ -109,7 +109,7 @@ struct EQPresetData: Codable, Equatable, Sendable, Identifiable {
 extension EQPresetData {
     static let defaultFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
-    /// CONTRACT.md upper bound; 0 bands = flat passthrough allowed.
+    /// CLAUDE.md § Invariants upper bound; 0 bands = flat passthrough allowed.
     /// CANONICAL for this ceiling — EQCoefficients.maxSections (Sources/Engine) mirrors
     /// it rather than re-declaring 16 independently, since the RT coefficient buffer
     /// must be sized to hold at least this many bands.

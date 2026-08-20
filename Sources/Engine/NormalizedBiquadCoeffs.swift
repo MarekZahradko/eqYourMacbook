@@ -1,6 +1,6 @@
 // Adapted from iQualize (MIT, Copyright (c) 2026 Darius) — https://github.com/DariusCorvus/iqualize
 // Extracted from BiquadFilter.swift — NormalizedBiquadCoeffs only; scalar BiquadFilterChain dropped
-// (we use vDSP_biquadm for SIMD processing per PLAN.md §2 DSP).
+// (we use vDSP_biquadm for SIMD processing).
 import Foundation
 
 // MARK: - Normalized Biquad Coefficients

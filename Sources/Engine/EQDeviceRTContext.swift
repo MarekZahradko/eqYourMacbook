@@ -3,7 +3,7 @@
 // Each EQDeviceEngine owns its own instance and its own IOProc block (built by
 // `makeIOBlock`, see EQIOProcFactory.swift). At most one EQDeviceEngine ever actually
 // runs at a time — the enabled device that's ALSO the OS's current default-output
-// route (docs/CONTRACT.md's Reconciliation/Engage-policy) — but this class still
+// route (CLAUDE.md § Invariants) — but this class still
 // needs its own per-instance storage regardless of that count:
 //
 // MUST be a class: held (indirectly) in OutputDeviceEQCoordinator's
@@ -45,7 +45,7 @@ import Darwin
 // memory fence and — because it is an opaque external call the optimizer cannot
 // see through — also acts as a compiler barrier, giving the same happens-before
 // guarantee a real atomic release/acquire pair would, with a single instruction,
-// no allocation, no lock, no blocking (RT-safe per CONTRACT.md). It has been
+// no allocation, no lock, no blocking (RT-safe per CLAUDE.md § Rules). It has been
 // deprecated since macOS 10.12 in favor of <stdatomic.h>'s C11 atomics, but
 // remains present in the SDK; the deprecation warning is expected and accepted
 // here. VERIFY ON FIRST MAC BUILD: once the deployment target moves to macOS 15+,
@@ -103,7 +103,7 @@ final class EQDeviceRTContext {
     ///
     /// VERIFY ON FIRST MAC BUILD: vDSP_biquadm_SetTargetsDouble must not allocate (Apple
     /// documents it as the live-ramp path). If profiling shows it allocates, fall back to
-    /// double-buffered-setup + atomic-pointer-swap (PLAN.md §DSP).
+    /// double-buffered-setup + atomic-pointer-swap.
     var pendingCoeffs: UnsafeMutablePointer<Double>?
     var pendingFlag: Int32 = 0
 
@@ -139,7 +139,7 @@ final class EQDeviceRTContext {
     /// Retry cap for rtUpdateMaxAbsInput's CAS loop below. Contention is between exactly
     /// two threads (this one and the watchdog's reset), so in practice a lost race is
     /// resolved on the very next attempt; the cap just makes the RT thread's worst case
-    /// provably bounded rather than relying on that in practice — CONTRACT.md forbids
+    /// provably bounded rather than relying on that in practice — CLAUDE.md § Rules forbids
     /// unbounded blocking in the IOProc. Giving up after the cap just means this one
     /// callback's sample isn't folded into the running max; the next callback's own
     /// update (or the coalescing across many callbacks per watchdog tick) recovers it,
@@ -162,7 +162,7 @@ final class EQDeviceRTContext {
     }
 
     /// Main actor (watchdog) only — NOT the RT thread, so no bounded-retry constraint
-    /// applies here (CONTRACT.md's RT rules are scoped to the IOProc). Atomically reads
+    /// applies here (CLAUDE.md § Rules' RT rules are scoped to the IOProc). Atomically reads
     /// the running max AND resets it to zero in one step (an exchange, not a separate
     /// read-then-store), so a concurrent RT-thread update can never be silently dropped
     /// by the reset, nor vice versa. Contention is with a single other writer (the RT

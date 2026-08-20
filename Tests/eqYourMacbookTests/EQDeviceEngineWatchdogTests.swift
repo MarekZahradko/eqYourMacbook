@@ -52,7 +52,7 @@ import Testing
         #expect(d2.action == .suspectPermissionDenied)
     }
 
-    // MARK: - No false trip on a benign idle system (CONTRACT.md: zeros are legitimate
+    // MARK: - No false trip on a benign idle system (CLAUDE.md § Invariants: zeros are legitimate
     // when nothing is playing — must not trip the watchdog).
 
     @Test func idleSystemWithNoOtherAudioNeverEscalates() {
@@ -74,7 +74,7 @@ import Testing
     }
 
     // MARK: - Audio returning: clears the rebuild latch, and (only if a suspicion was
-    // active) fires the idempotent .running re-notification (CONTRACT.md).
+    // active) fires the idempotent .running re-notification (CLAUDE.md § Invariants).
 
     @Test func audioReturningAfterSuspicionClearsBothLatches() {
         let d = EQDeviceEngine.watchdogDecision(

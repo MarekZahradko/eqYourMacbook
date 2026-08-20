@@ -19,16 +19,16 @@ don't produce zipper noise.
   the app itself still targets macOS 14.4+ at runtime
 - Command Line Tools only — **no full Xcode.app required** (`xcode-select --install`)
 
-The app is built directly with `swiftc` (see `scripts/build.sh`); SPM
+The app is built directly with `swiftc` (see `./build.sh`); SPM
 (`Package.swift`) is used only to run unit tests. No `xcodebuild`, no
 `xcodegen`, no `.xcodeproj` on the build path.
 
 ## Build, install, and run
 
 ```sh
-./scripts/build.sh     # builds .build/eqYourMacbook.app (Debug)
-./scripts/run.sh       # opens .build/eqYourMacbook.app
-./scripts/install.sh   # test + build, installs to /Applications, launches it
+./build.sh     # builds .build/eqYourMacbook.app (Debug)
+./run.sh       # opens .build/eqYourMacbook.app
+./install.sh   # test + build, installs to /Applications, launches it
 ```
 
 `install.sh` is the one to use for real listening/M1 tests: it installs a
@@ -38,10 +38,16 @@ rather than a build-directory binary.
 ## Run unit tests
 
 ```sh
-./scripts/test.sh
+./test.sh
 ```
 
 ## Key documents
 
-- **PLAN.md** — architecture decisions, milestones, API facts, risks
-- **docs/CONTRACT.md** — Engine/App module interface (SSOT for parallel agents)
+- **CLAUDE.md** — build/test loop, non-negotiable rules, and the invariants the
+  code depends on (tap/mute semantics, teardown order, watchdog policy)
+
+## License
+
+MIT — see [LICENSE](LICENSE). Portions cherry-picked from
+[iQualize](https://github.com/DariusCorvus/iqualize) (MIT); those files keep
+their attribution headers.

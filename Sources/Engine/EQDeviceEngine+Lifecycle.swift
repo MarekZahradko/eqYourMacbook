@@ -1,7 +1,7 @@
 // EQDeviceEngine's start-up path: tap/aggregate construction, stream-format
 // verification, own-process (PID) translation, and the phase-A/phase-B state
 // transitions those drive. `state`'s setter is `private` to EQDeviceEngine.swift
-// (matching docs/CONTRACT.md's `private(set) var state`), so finishStart()/failStart()
+// (`state` is deliberately `private(set)`), so finishStart()/failStart()
 // drive transitions through the `transition(to:)` hook defined there instead.
 
 import AudioToolbox

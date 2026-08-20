@@ -10,7 +10,7 @@ import Foundation
 
 enum EQCoefficients {
 
-    // Pre-allocated RT capacities (CONTRACT.md: max 16 sections, 2 channels).
+    // Pre-allocated RT capacities (CLAUDE.md § Invariants: max 16 sections, 2 channels).
     // CANONICAL value lives on EQPresetData.maxBandCount (Sources/Model) — the RT
     // buffer just needs to hold at least as many sections as a preset can have bands;
     // mirrored here rather than re-declared so the two ceilings can't drift apart.
@@ -22,7 +22,7 @@ enum EQCoefficients {
     /// (channel varies fastest: s0ch0, s0ch1, s1ch0, s1ch1, …).
     ///
     /// vDSP_biquadm's expected layout was disputed; section-major is empirical, pinned
-    /// by the canary test testVDSPBiquadmStereoMatchesScalarReference. If that fails on
+    /// by the canary test vDSPBiquadmStereoMatchesScalarReference. If that fails on
     /// the Mac, flip ONLY this helper (channel-major = `(channel * sections + section) * 5`)
     /// — every builder/reader routes through it.
     static func flatIndex(section: Int, channel: Int, channels: Int) -> Int {
@@ -48,7 +48,7 @@ enum EQCoefficients {
     // Multi-entry memoization keyed per distinct device configuration
     // (bands/mutedFlags/sampleRate/channels/masterGainDB). Only one device engine ever
     // runs at a time (OutputDeviceEQCoordinator.maxSimultaneousDevices == 1 — see
-    // CONTRACT.md), but a sampleRate change still evicts a single-slot cache on every
+    // CLAUDE.md § Invariants), but a sampleRate change still evicts a single-slot cache on every
     // coalesced update tick. `cacheCapacity` with LRU eviction comfortably covers that
     // churn plus test-suite reuse across sample rates.
     //

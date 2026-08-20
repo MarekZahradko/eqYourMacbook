@@ -28,7 +28,7 @@ protocol CoreAudioTapServicing {
     // AudioObjectID always fails the real AudioObjectGetPropertyData (not HAL-registered),
     // blocking performStart from reaching .running and everything downstream (RT
     // allocation, IOProc creation, bypass-publish ordering, gain-staging). Widening the
-    // seam to cover these two reads (mirrored in docs/CONTRACT.md) closes that gap;
+    // seam to cover these two reads closes that gap;
     // LiveCoreAudioTapService forwards to the exact same free functions, so production
     // behavior is unchanged.
     func getStreamFormat(_ deviceID: AudioObjectID) -> AudioStreamBasicDescription?

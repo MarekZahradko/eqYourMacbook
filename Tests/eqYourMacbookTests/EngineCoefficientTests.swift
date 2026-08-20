@@ -3,7 +3,7 @@ import Testing
 @testable import eqYourMacbook
 
 /// Tests for the engine's coefficient pipeline and the vDSP_biquadm sign/order
-/// convention. The convention test (`testVDSPBiquadmMatchesScalarReference`) is the
+/// convention. The convention test (`vDSPBiquadmMatchesScalarReference`) is the
 /// CANARY: it empirically pins how vDSP interprets the 5 coefficients per section.
 /// If Apple's convention ever differs from what we assume, this is the test that
 /// catches it on the first Mac run.
@@ -807,7 +807,7 @@ import Testing
     //
     // Convention asserted: H(z) = (b0 + b1 z⁻¹ + b2 z⁻²)/(1 + a1 z⁻¹ + a2 z⁻²), vDSP
     // subtracts the a-terms internally, so a1/a2 are passed UN-negated. (The multi-channel/
-    // multi-section LAYOUT is pinned separately by testVDSPBiquadmStereoMatchesScalarReference below.)
+    // multi-section LAYOUT is pinned separately by vDSPBiquadmStereoMatchesScalarReference below.)
     @Test func vDSPBiquadmMatchesScalarReference() {
         let band = EQBand(frequency: 2000, gain: 6, bandwidth: 1.0, filterType: .parametric)
         let n = NormalizedBiquadCoeffs(from: BiquadResponse.coefficients(for: band, sampleRate: sampleRate))
@@ -900,7 +900,7 @@ import Testing
         }
 
         // CreateSetup takes (coeffs, M=sections, N=channels) — verified on-Mac
-        // 2026-06-10 by testVDSPBiquadmCreateSetupTakesSectionsThenChannels below.
+        // 2026-06-10 by vDSPBiquadmCreateSetupTakesSectionsThenChannels below.
         // (2×2 here, so the values coincide; the ORDER is sections first.)
         guard let setup = vDSP_biquadm_CreateSetup(coeffs,
                                                    vDSP_Length(sections),
