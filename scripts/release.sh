@@ -8,7 +8,7 @@ source "${REPO_ROOT}/scripts/build-config.sh"
 DIST="${REPO_ROOT}/build/dist"
 
 echo "==> Building (Release, ad-hoc signed)..."
-"${REPO_ROOT}/scripts/build.sh" --release
+"${REPO_ROOT}/build.sh" --release
 
 APP="${REPO_ROOT}/.build/${APP_NAME}.app"
 if [ ! -d "${APP}" ]; then

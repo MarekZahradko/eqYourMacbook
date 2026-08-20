@@ -2,7 +2,7 @@
 # swiftc directly, no xcodebuild — Command Line Tools are enough, no Xcode.app.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 source "${REPO_ROOT}/scripts/build-config.sh"
 SRC_DIR="${REPO_ROOT}/Sources"
 RESOURCES_DIR="${REPO_ROOT}/Resources"
@@ -72,7 +72,7 @@ sed "s/\$(EXECUTABLE_NAME)/${APP_NAME}/" "${RESOURCES_DIR}/Info.plist" \
 
 # --- Code sign
 
-# Required for AudioHardwareCreateProcessTap under Hardened Runtime (PLAN.md §2).
+# Required for AudioHardwareCreateProcessTap under Hardened Runtime (CLAUDE.md § Invariants).
 codesign --force --sign - \
     --entitlements "${RESOURCES_DIR}/${APP_NAME}.entitlements" \
     --options runtime \

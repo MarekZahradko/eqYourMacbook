@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# For the M1 kill -9 test (PLAN.md): needs a genuinely installed app, not a build-dir binary.
+# For the kill -9 fail-safe test (CLAUDE.md): needs a genuinely installed app, not a build-dir binary.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 source "${REPO_ROOT}/scripts/build-config.sh"
 
 SKIP_TESTS=false
@@ -16,13 +16,13 @@ done
 
 if [ "${SKIP_TESTS}" = false ]; then
     echo "==> Running tests..."
-    "${REPO_ROOT}/scripts/test.sh"
+    "${REPO_ROOT}/test.sh"
     echo ""
 fi
 
 # --- Build
 
-"${REPO_ROOT}/scripts/build.sh"
+"${REPO_ROOT}/build.sh"
 
 # --- Install & launch
 

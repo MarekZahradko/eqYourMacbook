@@ -19,7 +19,7 @@ jobs:
           swift --version
 
       - name: Build
-        run: bash scripts/build.sh
+        run: bash ./build.sh
 
       - name: Test
-        run: bash scripts/test.sh
+        run: bash ./test.sh

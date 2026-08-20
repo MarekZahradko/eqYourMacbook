@@ -51,11 +51,10 @@ let package = Package(
             path: ".",
             exclude: [
                 "CLAUDE.md",
-                "PLAN.md",
+                "LICENSE",
                 "README.md",
                 "Resources",
                 "Sources",
-                "docs",
                 "scripts",
                 "eqYourMacbook.xcodeproj",
             ],

@@ -22,7 +22,7 @@ jobs:
           swift --version
 
       - name: Test
-        run: bash scripts/test.sh
+        run: bash ./test.sh
 
       - name: Build and package (Release)
         run: bash scripts/release.sh
