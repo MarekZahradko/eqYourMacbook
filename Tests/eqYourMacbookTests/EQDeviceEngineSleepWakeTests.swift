@@ -33,7 +33,13 @@ import Testing
         let notificationCenter = NotificationCenter()
         let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device",
                                     tapService: fake, wakeNotificationCenter: notificationCenter,
-                                    hogModeMonitor: nil)
+                                    tapExclusionMonitor: nil,
+                                    // These tests wait ~1.8 s and assert the EXACT CoreAudio call
+                                    // log of the wake path; the default 2 s exclusion backstop
+                                    // (EQDeviceEngine+Lifecycle.swift) would land inside that window
+                                    // on some runs and add its two staleness reads (flaky +2). Push
+                                    // it far beyond the window so only the wake path produces calls.
+                                    exclusionBackstopInterval: 100)
         let delegate = RecordingEngineDelegate()
         engine.delegate = delegate
 
@@ -54,8 +60,12 @@ import Testing
         let addedCalls = Array(fake.callLog[callsBeforeWake...])
         #expect(addedCalls == [
             .stopDevice, .destroyIOProcID, .destroyAggregateDevice, .destroyProcessTap,
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat, .getDeviceNominalSampleRate,
+            .getBufferFrameSizeRange, .setBufferFrameSize, .getBufferFrameSize, .getOutputLatencyFrames,
             .createIOProcIDWithBlock, .startDevice,
+            // rebuild()'s one-shot exclusion re-check once its reentrancy guard clears;
+            // a no-op here since the fake reports unchanged sets.
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs,
         ], "wake must have driven a full stop+start rebuild (CLAUDE.md § Invariants teardown order), not merely re-touched the existing stack")
         #expect(engine.state == .running)
         // CLAUDE.md § Invariants: after a successful silent/preventive rebuild the engine fires
@@ -81,7 +91,13 @@ import Testing
         let notificationCenter = NotificationCenter()
         let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device",
                                     tapService: fake, wakeNotificationCenter: notificationCenter,
-                                    hogModeMonitor: nil)
+                                    tapExclusionMonitor: nil,
+                                    // These tests wait ~1.8 s and assert the EXACT CoreAudio call
+                                    // log of the wake path; the default 2 s exclusion backstop
+                                    // (EQDeviceEngine+Lifecycle.swift) would land inside that window
+                                    // on some runs and add its two staleness reads (flaky +2). Push
+                                    // it far beyond the window so only the wake path produces calls.
+                                    exclusionBackstopInterval: 100)
         let delegate = RecordingEngineDelegate()
         engine.delegate = delegate
 

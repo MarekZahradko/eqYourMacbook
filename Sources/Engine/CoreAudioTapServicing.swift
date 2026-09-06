@@ -35,10 +35,31 @@ protocol CoreAudioTapServicing {
     func getDeviceNominalSampleRate(_ deviceID: AudioObjectID) -> Double
 
     // performStart()'s step 2 needs the set of processes holding exclusive (hog-mode)
-    // access so it can exclude them from the global tap; the watchdog re-reads it as a
-    // staleness backstop. Behind the seam for the same reason as the two reads above:
+    // access so it can exclude them from the global tap; rebuild() re-reads it once as a
+    // staleness backstop when its reentrancy guard clears. Behind the seam for the same reason as the two reads above:
     // otherwise no test could drive the exclusion logic without a real hogged device.
     func hoggingProcessObjectIDs() -> [AudioObjectID]
+
+    // The tap's second dynamic exclusion source, read at the same two points: processes
+    // in a live duplex voice session (a call). See CoreAudioHelpers.swift's
+    // voiceSessionProcessObjectIDs() for why they must not be tapped. Behind the seam so
+    // a test can simulate a call starting/ending without one actually happening.
+    func voiceSessionProcessObjectIDs() -> [AudioObjectID]
+
+    // performStart()'s step 4.5 pins OUR client's IO buffer size on the aggregate instead
+    // of inheriting coreaudiod's per-device default (CLAUDE.md § Invariants, "IO buffer
+    // size"). The range read clamps the request, the read-back verifies what the HAL
+    // actually granted, and the latency read is diagnostics for the start-up log line
+    // that `scripts/eqym-ctl.sh latency` correlates with the measured figure.
+    func getBufferFrameSizeRange(_ deviceID: AudioObjectID) -> ClosedRange<UInt32>?
+    func setBufferFrameSize(_ deviceID: AudioObjectID, _ frames: UInt32) -> OSStatus
+    func getBufferFrameSize(_ deviceID: AudioObjectID) -> UInt32?
+    func getOutputLatencyFrames(_ deviceID: AudioObjectID) -> (latency: UInt32, safetyOffset: UInt32)?
+
+    // The watchdog's idle-latch detector (CLAUDE.md § Invariants, "Idle latch") reads
+    // whether the HAL currently reports OUR OWN process as duplex. Two property reads on
+    // one object; behind the seam so a test can put the engine into the latched state.
+    func isProcessRunningDuplex(_ processObject: AudioObjectID) -> Bool
 }
 
 /// Default live implementation: calls the real CoreAudio/AudioToolbox APIs directly.
@@ -79,5 +100,23 @@ struct LiveCoreAudioTapService: CoreAudioTapServicing {
     }
     func hoggingProcessObjectIDs() -> [AudioObjectID] {
         eqYourMacbook.hoggingProcessObjectIDs()
+    }
+    func voiceSessionProcessObjectIDs() -> [AudioObjectID] {
+        eqYourMacbook.voiceSessionProcessObjectIDs()
+    }
+    func getBufferFrameSizeRange(_ deviceID: AudioObjectID) -> ClosedRange<UInt32>? {
+        eqYourMacbook.getBufferFrameSizeRange(deviceID)
+    }
+    func setBufferFrameSize(_ deviceID: AudioObjectID, _ frames: UInt32) -> OSStatus {
+        eqYourMacbook.setBufferFrameSize(deviceID, frames)
+    }
+    func getBufferFrameSize(_ deviceID: AudioObjectID) -> UInt32? {
+        eqYourMacbook.getBufferFrameSize(deviceID)
+    }
+    func getOutputLatencyFrames(_ deviceID: AudioObjectID) -> (latency: UInt32, safetyOffset: UInt32)? {
+        eqYourMacbook.getOutputLatencyFrames(deviceID)
+    }
+    func isProcessRunningDuplex(_ processObject: AudioObjectID) -> Bool {
+        eqYourMacbook.processIsRunningDuplex(processObject)
     }
 }

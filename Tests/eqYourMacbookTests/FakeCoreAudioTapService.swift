@@ -29,6 +29,12 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         case getStreamFormat
         case getDeviceNominalSampleRate
         case hoggingProcessObjectIDs
+        case voiceSessionProcessObjectIDs
+        case getBufferFrameSizeRange
+        case setBufferFrameSize
+        case getBufferFrameSize
+        case getOutputLatencyFrames
+        case isProcessRunningDuplex
     }
 
     // MARK: - Call log (order + count) — read this to assert CLAUDE.md § Invariants' teardown order.
@@ -64,6 +70,24 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
     /// hogged, matching an idle system. A test flips this mid-run to simulate another
     /// app taking (or releasing) exclusive access to a device.
     var hoggingProcessObjectsToReturn: [AudioObjectID] = []
+
+    /// Processes in a live duplex voice session (a call), the tap's second exclusion
+    /// source. Default: nobody is on a call. A test flips this mid-run to simulate a call
+    /// starting or ending without one actually happening.
+    var voiceSessionProcessObjectsToReturn: [AudioObjectID] = []
+
+    // IO buffer pin (performStart step 4.5). The fake models a HAL that grants exactly
+    // what is asked within `bufferFrameSizeRangeToReturn`; `failSetBufferFrameSize`
+    // models a refusal, which must be non-fatal (the pin is a tuning, not a dependency).
+    var bufferFrameSizeRangeToReturn: ClosedRange<UInt32>? = 32...4096
+    var failSetBufferFrameSize = false
+    private(set) var lastRequestedBufferFrameSize: UInt32?
+    private var grantedBufferFrameSize: UInt32 = 512
+    var outputLatencyFramesToReturn: (latency: UInt32, safetyOffset: UInt32)? = (0, 0)
+
+    /// Process objects the fake HAL reports as running input AND output. Put the engine's
+    /// own `ownProcessObjectID` here to simulate the idle latch (CLAUDE.md § Invariants).
+    var duplexProcessObjectsToReturn: Set<AudioObjectID> = []
 
     /// The exclusion list of the most recently created tap — lets a test assert exactly
     /// which processes were excluded (CATapDescription exposes no readable accessor
@@ -185,5 +209,39 @@ final class FakeCoreAudioTapService: CoreAudioTapServicing, @unchecked Sendable 
         callLog.append(.hoggingProcessObjectIDs)
         onCall?(.hoggingProcessObjectIDs)
         return hoggingProcessObjectsToReturn
+    }
+
+    func voiceSessionProcessObjectIDs() -> [AudioObjectID] {
+        callLog.append(.voiceSessionProcessObjectIDs)
+        onCall?(.voiceSessionProcessObjectIDs)
+        return voiceSessionProcessObjectsToReturn
+    }
+    func getBufferFrameSizeRange(_ deviceID: AudioObjectID) -> ClosedRange<UInt32>? {
+        callLog.append(.getBufferFrameSizeRange)
+        onCall?(.getBufferFrameSizeRange)
+        return bufferFrameSizeRangeToReturn
+    }
+    func setBufferFrameSize(_ deviceID: AudioObjectID, _ frames: UInt32) -> OSStatus {
+        callLog.append(.setBufferFrameSize)
+        onCall?(.setBufferFrameSize)
+        lastRequestedBufferFrameSize = frames
+        guard !failSetBufferFrameSize else { return failureStatus }
+        grantedBufferFrameSize = frames
+        return noErr
+    }
+    func getBufferFrameSize(_ deviceID: AudioObjectID) -> UInt32? {
+        callLog.append(.getBufferFrameSize)
+        onCall?(.getBufferFrameSize)
+        return grantedBufferFrameSize
+    }
+    func getOutputLatencyFrames(_ deviceID: AudioObjectID) -> (latency: UInt32, safetyOffset: UInt32)? {
+        callLog.append(.getOutputLatencyFrames)
+        onCall?(.getOutputLatencyFrames)
+        return outputLatencyFramesToReturn
+    }
+    func isProcessRunningDuplex(_ processObject: AudioObjectID) -> Bool {
+        callLog.append(.isProcessRunningDuplex)
+        onCall?(.isProcessRunningDuplex)
+        return duplexProcessObjectsToReturn.contains(processObject)
     }
 }

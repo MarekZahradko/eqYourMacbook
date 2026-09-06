@@ -106,4 +106,62 @@ import Testing
         #expect(d.newConsecutiveSilentChecks == 0)
         #expect(d.action == .none)
     }
+
+    // MARK: - Idle latch (CLAUDE.md § Invariants): silent, nobody we tap is playing, yet the
+    // HAL still reports our own process as duplex → coreaudiod is stuck treating us as an
+    // active call. Two consecutive such ticks → ONE rebuild per silence period.
+
+    private func idleLatched(consecutive: Int, didRebuild: Bool, othersOutputting: Bool = false,
+                             maxAbs: Float = 0, advancing: Bool = true, duplex: Bool = true) -> EQDeviceEngine.WatchdogDecision {
+        EQDeviceEngine.watchdogDecision(
+            advancing: advancing, maxAbs: maxAbs, othersOutputting: othersOutputting,
+            consecutiveSilentChecks: 0, didRebuildForSilence: false, permissionSuspected: false,
+            ownReportedDuplex: duplex, consecutiveIdleLatchChecks: consecutive, didRebuildForIdleLatch: didRebuild)
+    }
+
+    @Test func idleLatchNeedsTwoConsecutiveTicks() {
+        let d1 = idleLatched(consecutive: 0, didRebuild: false)
+        #expect(d1.action == .none)
+        #expect(d1.newConsecutiveIdleLatchChecks == 1)
+        #expect(d1.newConsecutiveSilentChecks == 0, "not a TCC-silent tick: nobody else is playing")
+        let d2 = idleLatched(consecutive: d1.newConsecutiveIdleLatchChecks, didRebuild: false)
+        #expect(d2.action == .rebuildToReleaseIdleLatch)
+        #expect(d2.newConsecutiveIdleLatchChecks == 0, "counter resets once the action fires")
+    }
+
+    @Test func idleLatchRebuildsOnlyOncePerSilencePeriod() {
+        let d = idleLatched(consecutive: 1, didRebuild: true)
+        #expect(d.action == .none, "the one rebuild was spent; wait for audio before trying again")
+        #expect(d.newConsecutiveIdleLatchChecks == 0)
+    }
+
+    @Test func audioReturningReopensTheIdleLatchRebuild() {
+        let d = idleLatched(consecutive: 1, didRebuild: true, othersOutputting: true, maxAbs: 0.2)
+        #expect(d.resetDidRebuildForIdleLatch)
+        #expect(d.resetDidRebuildForSilence)
+        #expect(d.newConsecutiveIdleLatchChecks == 0)
+        #expect(d.action == .none)
+    }
+
+    @Test func idleLatchIgnoresAnIdleSystemThatIsNotReportedDuplex() {
+        // The fresh-stack state: silent, nobody playing, NOT duplex → costs nothing, leave it.
+        let d = idleLatched(consecutive: 5, didRebuild: false, duplex: false)
+        #expect(d.newConsecutiveIdleLatchChecks == 0)
+        #expect(d.action == .none)
+    }
+
+    @Test func duplexWhileOthersPlayIsTheTCCPathNotTheIdleLatch() {
+        let d = EQDeviceEngine.watchdogDecision(
+            advancing: true, maxAbs: 0, othersOutputting: true,
+            consecutiveSilentChecks: 1, didRebuildForSilence: false, permissionSuspected: false,
+            ownReportedDuplex: true, consecutiveIdleLatchChecks: 1, didRebuildForIdleLatch: false)
+        #expect(d.action == .rebuild)
+        #expect(d.newConsecutiveIdleLatchChecks == 0, "the two paths are disjoint on any one tick")
+    }
+
+    @Test func nonAdvancingCounterNeverCountsAsIdleLatched() {
+        let d = idleLatched(consecutive: 3, didRebuild: false, advancing: false)
+        #expect(d.newConsecutiveIdleLatchChecks == 0)
+        #expect(d.action == .none)
+    }
 }

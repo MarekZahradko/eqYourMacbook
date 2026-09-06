@@ -41,13 +41,17 @@ final class EQController: ObservableObject {
     }
 
     @Published var isABBypassed: Bool = false {
-        didSet { coordinator.updateBypass(isABBypassed) }
+        didSet {
+            coordinator.updateBypass(isABBypassed)
+            publishControlState()
+        }
     }
 
     @Published var gainStagingEnabled: Bool {
         didSet {
             defaults.set(gainStagingEnabled, forKey: Keys.gainStagingEnabled)
             coordinator.setGainStagingEnabled(gainStagingEnabled)
+            publishControlState()
         }
     }
 
@@ -78,6 +82,12 @@ final class EQController: ObservableObject {
 
     private let coordinator: OutputDeviceEQCoordinating
     private let defaults: UserDefaults
+    /// Local control surface for bench tools (EQControlChannel.swift); nil in tests and
+    /// wherever scripting the app is not wanted. Every state change is broadcast through
+    /// it, deduplicated by snapshot equality so a rebuild that changes nothing observable
+    /// is silent while one that changes the exclusion set is not.
+    private let controlChannel: EQControlChannel?
+    private var lastBroadcastSnapshot: EQControlSnapshot?
     private var lastAggregateStatus = AggregateEngineStatus(anyRunning: false, permissionNeeded: false, errorMessage: nil)
 
     var statusDetail: String {
@@ -98,9 +108,11 @@ final class EQController: ObservableObject {
 
     // MARK: Init
 
-    init(coordinator: OutputDeviceEQCoordinating = OutputDeviceEQCoordinator(), defaults: UserDefaults = .standard) {
+    init(coordinator: OutputDeviceEQCoordinating = OutputDeviceEQCoordinator(), defaults: UserDefaults = .standard,
+         controlChannel: EQControlChannel? = nil) {
         self.coordinator = coordinator
         self.defaults = defaults
+        self.controlChannel = controlChannel
 
         let storedEnabled = defaults.object(forKey: Keys.isEnabled) as? Bool ?? true
         isEnabled = storedEnabled
@@ -130,6 +142,61 @@ final class EQController: ObservableObject {
         coordinator.setGloballyEnabled(isEnabled)
 
         updateStatus()
+        controlChannel?.start { [weak self] command, requestID in
+            self?.handleControlCommand(command, requestID: requestID)
+        }
+    }
+
+    // MARK: - Control channel (EQControlChannel.swift / EQControlProtocol.swift)
+
+    /// Applies one command. Pure wiring onto the same properties the menu drives — the
+    /// channel can do nothing the UI cannot. `.status` is a no-op (the reply carries the
+    /// snapshot).
+    func applyControlCommand(_ command: EQControlCommand) {
+        switch command {
+        case .status:    break
+        case .enable:    if !isEnabled { isEnabled = true }
+        case .disable:   if isEnabled { isEnabled = false }
+        case .bypassOn:  if !isABBypassed { isABBypassed = true }
+        case .bypassOff: if isABBypassed { isABBypassed = false }
+        }
+    }
+
+    func controlSnapshot() -> EQControlSnapshot {
+        let info = coordinator.runningEngineInfo
+        return EQControlSnapshot(
+            enabled: isEnabled, bypassed: isABBypassed, gainStaging: gainStagingEnabled,
+            status: Self.controlStatusToken(status), statusDetail: statusDetail,
+            engineRunning: info != nil,
+            deviceUID: info?.deviceUID, deviceName: info?.deviceName, sampleRate: info?.sampleRate,
+            ioBufferFrames: info?.ioBufferFrames.map { Int($0) },
+            excludedProcessObjects: info?.excludedProcessObjects.map { Int($0) } ?? [],
+            ownProcessObject: info.map { Int($0.ownProcessObject) })
+    }
+
+    nonisolated static func controlStatusToken(_ status: DisplayStatus) -> String {
+        switch status {
+        case .active:           return "active"
+        case .disabled:         return "disabled"
+        case .permissionNeeded: return "permissionNeeded"
+        case .error:            return "error"
+        }
+    }
+
+    private func handleControlCommand(_ command: EQControlCommand, requestID: String?) {
+        applyControlCommand(command)
+        let snapshot = controlSnapshot()
+        lastBroadcastSnapshot = snapshot
+        controlChannel?.broadcast(snapshot, event: .reply, requestID: requestID)
+    }
+
+    /// Broadcasts a `.changed` snapshot if anything observable moved since the last one.
+    private func publishControlState() {
+        guard let controlChannel else { return }
+        let snapshot = controlSnapshot()
+        guard snapshot != lastBroadcastSnapshot else { return }
+        lastBroadcastSnapshot = snapshot
+        controlChannel.broadcast(snapshot, event: .changed)
     }
 
     // MARK: DisplayStatus derivation
@@ -152,6 +219,7 @@ final class EQController: ObservableObject {
             isEnabled: isEnabled,
             permissionSuspected: lastAggregateStatus.permissionNeeded,
             errorMessage: lastAggregateStatus.errorMessage)
+        publishControlState()
     }
 
     // MARK: Device checkboxes

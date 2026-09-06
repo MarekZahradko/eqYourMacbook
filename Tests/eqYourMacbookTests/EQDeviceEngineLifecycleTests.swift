@@ -21,6 +21,10 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
     private(set) var states: [EngineState] = []
     private(set) var permissionSuspectedCount = 0
     var othersOutputtingAnswer = false
+    /// Exclusion set the engine's last watchdog tick asked about. The watchdog must pass
+    /// its FULL tap-exclusion set, not just its own process object — see
+    /// EQDeviceEngineTapExclusionTests.watchdogAsksAboutOtherOutputUsingTheFullExclusionSet.
+    private(set) var lastOthersOutputtingExclusions: [AudioObjectID]?
 
     func engine(_ engine: EQDeviceEngine, didChangeState state: EngineState) {
         states.append(state)
@@ -28,8 +32,9 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
     func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine) {
         permissionSuspectedCount += 1
     }
-    func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool {
-        othersOutputtingAnswer
+    func anyOtherProcessOutputtingAudio(excluding excludedProcessObjectIDs: [AudioObjectID]) -> Bool {
+        lastOthersOutputtingExclusions = excludedProcessObjectIDs
+        return othersOutputtingAnswer
     }
 }
 
@@ -42,7 +47,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
 
     @Test func startSucceedsAndTransitionsToRunning() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 42, deviceUID: "dev-1", deviceName: "Device 1", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 42, deviceUID: "dev-1", deviceName: "Device 1", tapService: fake, tapExclusionMonitor: nil)
         let delegate = RecordingEngineDelegate()
         engine.delegate = delegate
 
@@ -58,11 +63,62 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         // `didSet`, so the only transition observed is .stopped -> .running.
         #expect(delegate.states == [.running])
         #expect(fake.callLog == [
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
-            .getDeviceNominalSampleRate, .createIOProcIDWithBlock, .startDevice,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .getDeviceNominalSampleRate, .getBufferFrameSizeRange, .setBufferFrameSize, .getBufferFrameSize, .getOutputLatencyFrames,
+            .createIOProcIDWithBlock, .startDevice,
         ])
 
         engine.stop()   // tidy up the watchdog timer rather than leaving it orphaned
+    }
+
+    // MARK: - IO buffer pin (performStart step 4.5, CLAUDE.md § Invariants "IO buffer size")
+
+    @Test func ioBufferFrameSizeIsTheNearestPowerOfTwoForTheTargetDuration() {
+        let target = EQDeviceEngine.ioBufferTargetDuration          // 512 / 48 kHz
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 48_000, range: nil) == 512)
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 44_100, range: nil) == 512)
+        // Same wall-clock cycle at a higher rate → more frames (not the same 512).
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 96_000, range: nil) == 1024)
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 192_000, range: nil) == 2048)
+        // Rounding is in ratio (log2) space: 700 frames is nearer 512 than 1024.
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: 700.0 / 48_000, sampleRate: 48_000, range: nil) == 512)
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: 750.0 / 48_000, sampleRate: 48_000, range: nil) == 1024)
+    }
+
+    @Test func ioBufferFrameSizeIsClampedIntoTheHALRange() {
+        let target = EQDeviceEngine.ioBufferTargetDuration
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 48_000, range: 64...256) == 256)
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 48_000, range: 1024...4096) == 1024)
+        #expect(EQDeviceEngine.ioBufferFrameSize(targetDuration: target, sampleRate: 48_000, range: 32...4096) == 512)
+    }
+
+    @Test func startPinsTheIOBufferSizeOnTheAggregate() async throws {
+        let fake = FakeCoreAudioTapService()
+        fake.nominalSampleRateToReturn = 96_000
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
+
+        engine.start(bands: [testBand])
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(engine.state == .running)
+        #expect(fake.lastRequestedBufferFrameSize == 1024, "target duration is rate-independent: 512 @ 48 kHz ≙ 1024 @ 96 kHz")
+        engine.stop()
+    }
+
+    @Test func aRefusedIOBufferPinIsNotFatal() async throws {
+        // The pin is a tuning, not a dependency: a HAL that refuses it must leave the
+        // engine running at whatever default it has (logged as an error), never .failed.
+        let fake = FakeCoreAudioTapService()
+        fake.failSetBufferFrameSize = true
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
+
+        engine.start(bands: [testBand])
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(engine.state == .running)
+        #expect(fake.callLog.contains(.setBufferFrameSize))
+        #expect(fake.callLog.contains(.startDevice))
+        engine.stop()
     }
 
     // MARK: - start() failure: each CoreAudio call site in performStart()
@@ -70,7 +126,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
     @Test func startFailsWhenProcessTapCreationFails() {
         let fake = FakeCoreAudioTapService()
         fake.failCreateProcessTap = true
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
 
         engine.start(bands: [testBand])
 
@@ -80,13 +136,13 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         #expect(message.hasPrefix("Failed to create process tap"))
         // Nothing beyond the failing call was attempted — no cleanup needed since
         // nothing was created yet.
-        #expect(fake.callLog == [.hoggingProcessObjectIDs, .createProcessTap])
+        #expect(fake.callLog == [.hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap])
     }
 
     @Test func startFailsWhenAggregateCreationFails() {
         let fake = FakeCoreAudioTapService()
         fake.failCreateAggregateDevice = true
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
 
         engine.start(bands: [testBand])
 
@@ -98,14 +154,14 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         // teardownCoreAudio() must clean it up — proving partial-failure cleanup still
         // respects the destroy-what-exists rule.
         #expect(fake.callLog == [
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .destroyProcessTap,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .destroyProcessTap,
         ])
     }
 
     @Test func startFailsWhenStreamFormatUnreadable() {
         let fake = FakeCoreAudioTapService()
         fake.streamFormatToReturn = nil
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
 
         engine.start(bands: [testBand])
 
@@ -116,7 +172,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         // Tap AND aggregate were both created before the format read failed; both must
         // be torn down, aggregate-before-tap (CLAUDE.md § Invariants order).
         #expect(fake.callLog == [
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
             .destroyAggregateDevice, .destroyProcessTap,
         ])
     }
@@ -126,7 +182,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         var badFormat = FakeCoreAudioTapService.validFloat32StereoFormat
         badFormat.mChannelsPerFrame = 1   // engine assumes EQCoefficients.channels == 2
         fake.streamFormatToReturn = badFormat
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
 
         engine.start(bands: [testBand])
 
@@ -135,7 +191,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         }
         #expect(message.hasPrefix("Unsupported audio format"))
         #expect(fake.callLog == [
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
             .destroyAggregateDevice, .destroyProcessTap,
         ])
     }
@@ -144,7 +200,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
 
     @Test func stopTearsDownInContractOrder() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
         engine.start(bands: [testBand])
         try await Task.sleep(for: .milliseconds(400))
         #expect(engine.state == .running)
@@ -162,7 +218,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
 
     @Test func updateAfterCoalesceIntervalWritesExpectedPendingCoefficients() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
         engine.start(bands: [testBand])
         try await Task.sleep(for: .milliseconds(400))
         #expect(engine.state == .running)
@@ -205,7 +261,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
 
     @Test func bypassSetBeforeStartIsPublishedToContextBeforeStartDevice() async throws {
         let fake = FakeCoreAudioTapService()
-        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, hogModeMonitor: nil)
+        let engine = EQDeviceEngine(deviceID: 1, deviceUID: "dev", deviceName: "Device", tapService: fake, tapExclusionMonitor: nil)
 
         engine.isBypassed = true
         #expect(engine.bypassIntent)   // main-actor SSOT updated immediately, even while stopped
@@ -243,7 +299,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         let band = EQBand(frequency: 1000, gain: 18, bandwidth: 1.0, filterType: .parametric)
 
         let fakeEnabled = FakeCoreAudioTapService()
-        let engineEnabled = EQDeviceEngine(deviceID: 1, deviceUID: "gs-enabled", deviceName: "GS Enabled", tapService: fakeEnabled, hogModeMonitor: nil)
+        let engineEnabled = EQDeviceEngine(deviceID: 1, deviceUID: "gs-enabled", deviceName: "GS Enabled", tapService: fakeEnabled, tapExclusionMonitor: nil)
         engineEnabled.gainStagingEnabled = true
         engineEnabled.start(bands: [band])
         try await Task.sleep(for: .milliseconds(400))
@@ -252,7 +308,7 @@ final class RecordingEngineDelegate: EQDeviceEngineDelegate {
         engineEnabled.stop()
 
         let fakeDisabled = FakeCoreAudioTapService()
-        let engineDisabled = EQDeviceEngine(deviceID: 2, deviceUID: "gs-disabled", deviceName: "GS Disabled", tapService: fakeDisabled, hogModeMonitor: nil)
+        let engineDisabled = EQDeviceEngine(deviceID: 2, deviceUID: "gs-disabled", deviceName: "GS Disabled", tapService: fakeDisabled, tapExclusionMonitor: nil)
         engineDisabled.gainStagingEnabled = false
         engineDisabled.start(bands: [band])
         try await Task.sleep(for: .milliseconds(400))

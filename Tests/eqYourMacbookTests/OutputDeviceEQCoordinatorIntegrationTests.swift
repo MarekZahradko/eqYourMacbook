@@ -60,7 +60,7 @@ private final class EngineFactorySpy {
         configure?(deviceID, fake)
         fakesByDeviceID[deviceID] = fake
         createdDeviceIDs.append(deviceID)
-        return EQDeviceEngine(deviceID: deviceID, deviceUID: deviceUID, deviceName: deviceName, tapService: fake, hogModeMonitor: nil)
+        return EQDeviceEngine(deviceID: deviceID, deviceUID: deviceUID, deviceName: deviceName, tapService: fake, tapExclusionMonitor: nil)
     }
 }
 
@@ -132,8 +132,9 @@ private final class EngineFactorySpy {
         #expect(statusSnapshots.last?.anyRunning == true)
         let fake = try #require(spy.fakesByDeviceID[syntheticID])
         #expect(fake.callLog == [
-            .hoggingProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
-            .getDeviceNominalSampleRate, .createIOProcIDWithBlock, .startDevice,
+            .hoggingProcessObjectIDs, .voiceSessionProcessObjectIDs, .createProcessTap, .createAggregateDevice, .getStreamFormat,
+            .getDeviceNominalSampleRate, .getBufferFrameSizeRange, .setBufferFrameSize, .getBufferFrameSize, .getOutputLatencyFrames,
+            .createIOProcIDWithBlock, .startDevice,
         ])
         // At least the row rebuild + status publish from setDeviceEnabled's own
         // reconcile() pass, plus the one from finishStart()'s later didChangeState(.running).

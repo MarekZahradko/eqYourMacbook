@@ -197,15 +197,17 @@ func hoggingProcessObjectIDs() -> [AudioObjectID] {
     return result
 }
 
-// MARK: - Process-output introspection (watchdog discriminator)
+// MARK: - Process-object introspection
+//
+// Shared by the watchdog's "is anyone else playing?" discriminator and by the tap's
+// voice-session exclusion. Both walk `kAudioHardwarePropertyProcessObjectList` and read
+// per-process boolean IO flags, so the enumeration and the flag read live here once.
+// macOS 14.2+ constants — VERIFIED ON FIRST MAC BUILD (they resolve against the CLT SDK).
 
-/// Whether any process OTHER than `excluding` is currently outputting audio. Lets the
-/// watchdog distinguish a genuine silent-input fault (chain broken while audio plays)
-/// from a benign idle system (nothing playing, zeros are correct). Uses macOS 14.2+
-/// constants `kAudioHardwarePropertyProcessObjectList`/`kAudioProcessPropertyIsRunningOutput`
-/// — VERIFY THESE NAMES ON THE FIRST MAC BUILD; if missing from the SDK, delete this
-/// helper and never auto-escalate to permissionSuspected (keep only the silent rebuild path).
-func anyOtherProcessOutputtingAudio(excluding ownProcessObjectID: AudioObjectID) -> Bool {
+/// Every process object the HAL currently knows about. Empty on any read failure —
+/// callers treat "no processes" as "nothing to act on", which is the safe default for
+/// both of them (no silence escalation; no extra tap exclusions).
+func allProcessObjectIDs() -> [AudioObjectID] {
     var listAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyProcessObjectList,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -215,29 +217,123 @@ func anyOtherProcessOutputtingAudio(excluding ownProcessObjectID: AudioObjectID)
     guard AudioObjectGetPropertyDataSize(
         AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &size) == noErr,
           size > 0 else {
-        return false
+        return []
     }
     let count = Int(size) / MemoryLayout<AudioObjectID>.size
-    guard count > 0 else { return false }
+    guard count > 0 else { return [] }
     var processes = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown), count: count)
     guard AudioObjectGetPropertyData(
         AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &size, &processes) == noErr else {
-        return false
+        return []
     }
+    return processes
+}
 
-    var runningAddress = AudioObjectPropertyAddress(
-        mSelector: kAudioProcessPropertyIsRunningOutput,
+/// Read one of a process object's `UInt32` IO flags (`kAudioProcessPropertyIsRunningInput`
+/// / `…IsRunningOutput`). False on a failed read — a process we can't interrogate is
+/// treated as idle rather than aborting the whole scan (same convention as
+/// getDeviceTransportType).
+func processIsRunning(_ processObject: AudioObjectID,
+                       _ selector: AudioObjectPropertySelector) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: selector,
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain
     )
-    for processObject in processes where processObject != ownProcessObjectID {
-        var isRunningOutput: UInt32 = 0
-        var valueSize = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(
-            processObject, &runningAddress, 0, nil, &valueSize, &isRunningOutput)
-        if status == noErr && isRunningOutput != 0 {
-            return true
-        }
+    var value: UInt32 = 0
+    var valueSize = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(processObject, &address, 0, nil, &valueSize, &value) == noErr else {
+        return false
     }
-    return false
+    return value != 0
+}
+
+// MARK: - Voice sessions (tap exclusion)
+//
+// WHY (observed 2026-08-26, WhatsApp): a process running INPUT and OUTPUT at once is in a
+// duplex voice session — a call. macOS drives those through VoiceProcessingIO, which
+// ducks "other (i.e. non-voice) audio" by default (AudioUnitProperties.h,
+// kAUVoiceIOProperty_OtherAudioDuckingConfiguration). Our tap is `.mutedWhenTapped`, so
+// it silences the caller at the source and re-renders its audio from OUR process — which
+// the OS then classifies as that very "other audio" and ducks. The call ducks itself:
+// WhatsApp calls were near-inaudible until the EQ was toggled off. (Teams is unaffected:
+// it is a native macOS app doing its own AEC over the plain HAL, with no
+// VoiceProcessingIO session.) Bypass does NOT help — it keeps the tap alive and we are
+// still the process rendering the audio. The only fix is to keep such a process OUT of
+// the tap, so its audio never leaves its own voice session. Consequence, accepted
+// deliberately: calls are not equalized. Everything else still is.
+
+/// Process objects currently running INPUT and OUTPUT simultaneously — i.e. in a live
+/// duplex voice session. Our own process can match this too (the aggregate's tap side is
+/// an input stream), which is harmless: EQDeviceEngine.tapExcludedProcessObjects unions
+/// our own process object in unconditionally and deduplicates, so the resulting exclusion
+/// set is identical either way and stays stable across rebuilds.
+/// Running input AND output at once — the HAL's view of "in a voice session". Also what
+/// the watchdog reads about OUR OWN process object to detect the idle latch (CLAUDE.md
+/// § Invariants): once the tap has carried audio, coreaudiod keeps reporting our aggregate
+/// client as duplex and treats it as an always-active call — full device cost and a held
+/// sleep assertion — until the stack is rebuilt.
+func processIsRunningDuplex(_ processObject: AudioObjectID) -> Bool {
+    processIsRunning(processObject, kAudioProcessPropertyIsRunningInput)
+        && processIsRunning(processObject, kAudioProcessPropertyIsRunningOutput)
+}
+
+func voiceSessionProcessObjectIDs() -> [AudioObjectID] {
+    allProcessObjectIDs().filter(processIsRunningDuplex)
+}
+
+// MARK: - Process-output introspection (watchdog discriminator)
+
+/// Whether any process whose audio SHOULD be reaching our tap is currently outputting
+/// audio. Lets the watchdog distinguish a genuine silent-input fault (chain broken while
+/// audio plays) from a benign idle system (nothing playing, zeros are correct).
+///
+/// `excluding` is the tap's full exclusion set, not just our own process: a hog holder or
+/// a process in a call is deliberately NOT tapped, so its output legitimately never
+/// reaches us. Counting it here would make every call — or any exclusive-mode playback —
+/// look like a broken chain and escalate to a false "TCC denied" suspicion.
+func anyOtherProcessOutputtingAudio(excluding excludedProcessObjectIDs: [AudioObjectID]) -> Bool {
+    let excluded = Set(excludedProcessObjectIDs)
+    return allProcessObjectIDs().contains { process in
+        !excluded.contains(process)
+            && processIsRunning(process, kAudioProcessPropertyIsRunningOutput)
+    }
+}
+
+// MARK: - IO buffer size / latency (aggregate device, our client)
+
+/// Frames per IO cycle for OUR client of `deviceID` (`kAudioDevicePropertyBufferFrameSize`
+/// is a per-client setting, so this never affects other processes using the device).
+func getBufferFrameSize(_ deviceID: AudioObjectID) -> UInt32? {
+    getProperty(deviceID, selector: kAudioDevicePropertyBufferFrameSize)
+}
+
+func setBufferFrameSize(_ deviceID: AudioObjectID, _ frames: UInt32) -> OSStatus {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyBufferFrameSize,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var value = frames
+    return AudioObjectSetPropertyData(deviceID, &address, 0, nil,
+                                      UInt32(MemoryLayout<UInt32>.size), &value)
+}
+
+func getBufferFrameSizeRange(_ deviceID: AudioObjectID) -> ClosedRange<UInt32>? {
+    guard let range: AudioValueRange = getProperty(deviceID, selector: kAudioDevicePropertyBufferFrameSizeRange),
+          range.mMinimum >= 0, range.mMaximum >= range.mMinimum else { return nil }
+    return UInt32(range.mMinimum)...UInt32(range.mMaximum)
+}
+
+/// Frames the device reports it adds on the output side beyond the IO buffer itself:
+/// `kAudioDevicePropertyLatency` (device/driver latency) and
+/// `kAudioDevicePropertySafetyOffset` (how far ahead of the hardware head the HAL must
+/// write). Read for diagnostics only (logged at start-up; `scripts/eqym-ctl.sh latency`
+/// correlates the log line with the measured end-to-end figure).
+func getOutputLatencyFrames(_ deviceID: AudioObjectID) -> (latency: UInt32, safetyOffset: UInt32)? {
+    guard let latency: UInt32 = getProperty(deviceID, selector: kAudioDevicePropertyLatency,
+                                            scope: kAudioObjectPropertyScopeOutput),
+          let safety: UInt32 = getProperty(deviceID, selector: kAudioDevicePropertySafetyOffset,
+                                           scope: kAudioObjectPropertyScopeOutput) else { return nil }
+    return (latency, safety)
 }

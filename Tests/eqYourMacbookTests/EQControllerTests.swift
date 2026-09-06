@@ -129,6 +129,66 @@ private final class FakeOutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
 
         #expect(controller.bands == saved)
     }
+
+    // MARK: - Control channel (EQControlProtocol.swift): commands map onto the same
+    // properties the menu drives, and the snapshot survives its plist wire form.
+
+    @Test func controlCommandsDriveTheSamePropertiesAsTheMenu() {
+        let (controller, fake, _) = makeController()
+        defer { cleanUp() }
+        let enabledCallsBefore = fake.globallyEnabledCalls.count
+
+        controller.applyControlCommand(.disable)
+        #expect(controller.isEnabled == false)
+        #expect(fake.globallyEnabledCalls.last == false)
+        controller.applyControlCommand(.disable)          // idempotent: no second forward
+        #expect(fake.globallyEnabledCalls.count == enabledCallsBefore + 1)
+        controller.applyControlCommand(.enable)
+        #expect(controller.isEnabled == true)
+
+        controller.applyControlCommand(.bypassOn)
+        #expect(controller.isABBypassed == true)
+        #expect(fake.updateBypassCalls.last == true)
+        controller.applyControlCommand(.bypassOff)
+        #expect(controller.isABBypassed == false)
+
+        controller.applyControlCommand(.status)          // read-only
+        #expect(controller.isEnabled == true && controller.isABBypassed == false)
+    }
+
+    @Test func controlSnapshotReflectsStateAndRoundTripsThroughUserInfo() {
+        let (controller, _, _) = makeController()
+        defer { cleanUp() }
+
+        controller.applyControlCommand(.bypassOn)
+        let snapshot = controller.controlSnapshot()
+        #expect(snapshot.enabled == true)
+        #expect(snapshot.bypassed == true)
+        #expect(snapshot.status == "active")
+        #expect(snapshot.engineRunning == false, "the fake coordinator never runs an engine")
+        #expect(snapshot.deviceUID == nil && snapshot.ioBufferFrames == nil)
+
+        let info = snapshot.userInfo(event: .reply, requestID: "req-1")
+        #expect(EQControlProtocol.event(of: info) == .reply)
+        #expect(EQControlProtocol.requestID(of: info) == "req-1")
+        #expect(EQControlSnapshot(userInfo: info) == snapshot)
+
+        // A running engine's fields survive too, including the [Int] list.
+        let running = EQControlSnapshot(
+            enabled: true, bypassed: false, gainStaging: true, status: "active", statusDetail: "EQ active on 1 device",
+            engineRunning: true, deviceUID: "uid", deviceName: "MacBook Air Speakers",
+            sampleRate: 48_000, ioBufferFrames: 512, excludedProcessObjects: [77, 4242], ownProcessObject: 77)
+        #expect(EQControlSnapshot(userInfo: running.userInfo(event: .changed, requestID: nil)) == running)
+        #expect(EQControlSnapshot(userInfo: ["garbage": 1]) == nil)
+    }
+
+    @Test func controlStatusTokensAreStable() {
+        // The tools match on these literals; changing one is a protocol change.
+        #expect(EQController.controlStatusToken(.active) == "active")
+        #expect(EQController.controlStatusToken(.disabled) == "disabled")
+        #expect(EQController.controlStatusToken(.permissionNeeded) == "permissionNeeded")
+        #expect(EQController.controlStatusToken(.error("x")) == "error")
+    }
 }
 
 // MARK: - statusDetail (pure)
@@ -157,4 +217,5 @@ private final class FakeOutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
     @Test func errorMessageIncludesTheUnderlyingMessage() {
         #expect(EQController.statusDetail(for: .error("tap creation failed"), runningDeviceCount: 0) == "Error: tap creation failed")
     }
+
 }

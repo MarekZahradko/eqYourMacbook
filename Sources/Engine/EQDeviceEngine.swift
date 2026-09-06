@@ -25,14 +25,16 @@ enum EngineState: Equatable {
     // Watchdog rebuilt once and input is still all-zero → TCC denial likely.
     func engineSuspectsPermissionDenied(_ engine: EQDeviceEngine)
 
-    // Shared, short-TTL-cached answer to "is any OTHER process outputting audio right
-    // now?", consulted by every engine's watchdog tick (see EQDeviceEngine+Watchdog.swift).
-    // All engines would otherwise compute the IDENTICAL CoreAudio answer independently on
-    // their own 5 s timers, so the delegate (one OutputDeviceEQCoordinator fanning out to
-    // every engine) memoizes it for a short window instead — same semantics as the free
-    // function `anyOtherProcessOutputtingAudio(excluding:)` in CoreAudioHelpers.swift,
-    // which this should defer to on a cache miss.
-    func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool
+    // Shared, short-TTL-cached answer to "is any process we actually tap outputting audio
+    // right now?", consulted by every engine's watchdog tick (see
+    // EQDeviceEngine+Watchdog.swift). All engines would otherwise compute the IDENTICAL
+    // CoreAudio answer independently on their own 5 s timers, so the delegate (one
+    // OutputDeviceEQCoordinator fanning out to every engine) memoizes it for a short
+    // window instead — same semantics as the free function
+    // `anyOtherProcessOutputtingAudio(excluding:)` in CoreAudioHelpers.swift, which this
+    // should defer to on a cache miss. The argument is the caller's FULL tap-exclusion
+    // set, so the cache must key on it rather than assume one fixed value.
+    func anyOtherProcessOutputtingAudio(excluding excludedProcessObjectIDs: [AudioObjectID]) -> Bool
 }
 
 // MARK: - EQDeviceEngine
@@ -98,6 +100,10 @@ enum EngineState: Equatable {
     // teardownCoreAudio() below → internal.
     var tapID = AudioObjectID(kAudioObjectUnknown)
     var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+    /// IO buffer size the HAL actually granted our aggregate client (performStart step
+    /// 4.5), nil while no aggregate exists or the read-back failed. Reported over the
+    /// control channel so latency measurements are labeled with the value they measured.
+    var ioBufferFrames: UInt32?
     var procID: AudioDeviceIOProcID?
     var tapUUID = UUID()
 
@@ -106,20 +112,21 @@ enum EngineState: Equatable {
     // Touched by EQDeviceEngine+Watchdog.swift → internal.
     var ownProcessObjectID = AudioObjectID(kAudioObjectUnknown)
 
-    // Processes excluded from the current tap: ourselves plus every process holding
-    // exclusive (hog-mode) access to some output device (see HogModeMonitor.swift for
-    // why the latter must be excluded). Cached so the hog-mode monitor and the watchdog
-    // can tell whether the live set has drifted from what the running tap was built
-    // with, and rebuild only then. Touched by EQDeviceEngine+Lifecycle.swift and
-    // EQDeviceEngine+Watchdog.swift -> internal.
+    // Processes excluded from the current tap: ourselves, every process holding exclusive
+    // (hog-mode) access to some output device, and every process in a live voice session
+    // (see TapExclusionMonitor.swift for why the latter two must be excluded). Cached so
+    // the exclusion monitor and the watchdog can tell whether the live set has drifted
+    // from what the running tap was built with, and rebuild only then. Touched by
+    // EQDeviceEngine+Lifecycle.swift and EQDeviceEngine+Watchdog.swift -> internal.
     var excludedProcessObjectIDs: [AudioObjectID] = []
 
-    // Live hog-mode watcher, started once a run is built and stopped by stop(). Injected
-    // at init (defaulting to a real one) rather than created on demand so tests can pass
-    // nil and avoid registering live CoreAudio listeners; with no monitor the watchdog's
-    // 5 s staleness backstop still corrects the exclusion set, just less promptly.
+    // Live tap-exclusion watcher (hog mode + voice sessions), started once a run is built
+    // and stopped by stop(). Injected at init (defaulting to a real one) rather than
+    // created on demand so tests can pass nil and avoid registering live CoreAudio
+    // listeners; with no monitor the watchdog's 5 s staleness backstop still corrects the
+    // exclusion set, just less promptly.
     // Touched by EQDeviceEngine+Lifecycle.swift (start) and stop() below.
-    let hogModeMonitor: HogModeMonitor?
+    let tapExclusionMonitor: TapExclusionMonitor?
 
     // Last bands and the sample rate the current setup was built for — needed to
     // rebuild coefficients on update() and to rebuild the whole stack on watchdog.
@@ -166,9 +173,24 @@ enum EngineState: Equatable {
 
     // Watchdog. Touched only from EQDeviceEngine+Watchdog.swift → internal.
     var watchdogTimer: DispatchSourceTimer?
+    /// Polling backstop for the tap-exclusion set (CLAUDE.md § Invariants, "Tap
+    /// exclusions"): TapExclusionMonitor's HAL listeners are the fast path (~0.8 s), but a
+    /// Teams call was measured tapped for 291 s because no notification ever arrived for
+    /// that process object's IsRunningInput flip. Runs only while running.
+    var exclusionBackstopTimer: DispatchSourceTimer?
+    static let defaultExclusionBackstopInterval: TimeInterval = 2.0
+    let exclusionBackstopInterval: TimeInterval
     var lastWatchdogCounter: Int64 = 0
     var consecutiveSilentChecks = 0
     var didRebuildForSilence = false
+    /// Idle-latch bookkeeping (CLAUDE.md § Invariants, "Idle latch"): consecutive ticks that
+    /// were silent, with nobody we tap playing, yet with the HAL still reporting our own
+    /// process as duplex; and whether this silence period already spent its one rebuild.
+    /// Both flags are set by the tick AFTER rebuild() returns — performStart() resets them,
+    /// so setting them before would lose them (the bug that once kept the TCC escalation
+    /// from ever firing).
+    var consecutiveIdleLatchChecks = 0
+    var didRebuildForIdleLatch = false
 
     // Sleep/wake. Touched only from EQDeviceEngine+SleepWake.swift → internal.
     var wakeObserver: NSObjectProtocol?
@@ -176,8 +198,10 @@ enum EngineState: Equatable {
     init(deviceID: AudioObjectID, deviceUID: String, deviceName: String,
          tapService: CoreAudioTapServicing = LiveCoreAudioTapService(),
          wakeNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
-         hogModeMonitor: HogModeMonitor? = HogModeMonitor()) {
-        self.hogModeMonitor = hogModeMonitor
+         tapExclusionMonitor: TapExclusionMonitor? = TapExclusionMonitor(),
+         exclusionBackstopInterval: TimeInterval = EQDeviceEngine.defaultExclusionBackstopInterval) {
+        self.tapExclusionMonitor = tapExclusionMonitor
+        self.exclusionBackstopInterval = exclusionBackstopInterval
         self.deviceID = deviceID
         self.deviceUID = deviceUID
         self.deviceName = deviceName
@@ -236,8 +260,9 @@ enum EngineState: Equatable {
         // Idempotent: always tear down in strict order regardless of state, so a
         // .failed start with half-built handles also gets fully cleaned.
         stopWatchdog()
+        stopExclusionBackstop()
         removeWakeObserver()
-        removeHogModeMonitor()
+        removeTapExclusionMonitor()
         teardownCoreAudio()
         releaseRTState()
 
@@ -259,6 +284,7 @@ enum EngineState: Equatable {
         if aggregateDeviceID != kAudioObjectUnknown {
             _ = tapService.destroyAggregateDevice(aggregateDeviceID)
             aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+            ioBufferFrames = nil
         }
         if tapID != kAudioObjectUnknown {
             _ = tapService.destroyProcessTap(tapID)

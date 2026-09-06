@@ -37,6 +37,17 @@ struct AggregateEngineStatus: Equatable {
     var errorMessage: String?
 }
 
+/// What the control channel reports about the one live engine (CLAUDE.md § Invariants:
+/// at most one runs). nil when none is running.
+struct RunningEngineInfo: Equatable {
+    var deviceUID: String
+    var deviceName: String
+    var sampleRate: Double
+    var ioBufferFrames: UInt32?
+    var excludedProcessObjects: [AudioObjectID]
+    var ownProcessObject: AudioObjectID
+}
+
 /// Seam so EQController can be tested with a fake instead of a live coordinator
 /// (which would otherwise register a real CoreAudio device listener and start taps).
 @MainActor protocol OutputDeviceEQCoordinating: AnyObject {
@@ -49,6 +60,13 @@ struct AggregateEngineStatus: Equatable {
     func updateBands(_ bands: [EQBand])
     func updateBypass(_ bypassed: Bool)
     func setGainStagingEnabled(_ enabled: Bool)
+    /// Read-only view for EQController.controlSnapshot(); defaulted to nil below so a
+    /// test fake that never runs engines needs no implementation.
+    var runningEngineInfo: RunningEngineInfo? { get }
+}
+
+extension OutputDeviceEQCoordinating {
+    var runningEngineInfo: RunningEngineInfo? { nil }
 }
 
 @MainActor final class OutputDeviceEQCoordinator: OutputDeviceEQCoordinating {
@@ -139,10 +157,13 @@ struct AggregateEngineStatus: Equatable {
     // Memoizes anyOtherProcessOutputtingAudio(excluding:) across engines' independent,
     // unsynchronized 5 s watchdog timers, since every engine asks the same CoreAudio
     // question. TTL is short (1 s) so it only dedupes calls in the same jitter window,
-    // without blurring the watchdog's own 5 s/2-check detection latency.
+    // without blurring the watchdog's own 5 s/2-check detection latency. Keyed on the
+    // exclusion set as well: that set changes whenever a call starts or ends, and serving
+    // a pre-call answer afterwards would answer a different question than the one asked.
     private static let othersOutputtingCacheTTL: TimeInterval = 1.0
     private var cachedOthersOutputting: Bool?
     private var othersOutputtingCachedAt: Date?
+    private var othersOutputtingCacheKey: [AudioObjectID]?
 
     // Defense-in-depth only, not a tunable: setDeviceEnabled() and the default-output-
     // route gating in planReconciliation already guarantee at most one engine ever runs
@@ -164,6 +185,15 @@ struct AggregateEngineStatus: Equatable {
 // MARK: - EQDeviceEngineDelegate
 
 extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
+    var runningEngineInfo: RunningEngineInfo? {
+        guard let engine = engines.values.first(where: { if case .running = $0.state { return true }; return false })
+        else { return nil }
+        return RunningEngineInfo(deviceUID: engine.deviceUID, deviceName: engine.deviceName,
+                                 sampleRate: engine.currentSampleRate, ioBufferFrames: engine.ioBufferFrames,
+                                 excludedProcessObjects: engine.excludedProcessObjectIDs,
+                                 ownProcessObject: engine.ownProcessObjectID)
+    }
+
     func engine(_ engine: EQDeviceEngine, didChangeState state: EngineState) {
         engineStates[engine.deviceID] = state
         if case .running = state { permissionSuspectedDevices.remove(engine.deviceID) }
@@ -178,18 +208,20 @@ extension OutputDeviceEQCoordinator: EQDeviceEngineDelegate {
         publishAggregateStatus()
     }
 
-    func anyOtherProcessOutputtingAudio(excluding processObjectID: AudioObjectID) -> Bool {
+    func anyOtherProcessOutputtingAudio(excluding excludedProcessObjectIDs: [AudioObjectID]) -> Bool {
         let now = Date()
         if let cachedOthersOutputting, let othersOutputtingCachedAt,
+           othersOutputtingCacheKey == excludedProcessObjectIDs,
            now.timeIntervalSince(othersOutputtingCachedAt) < Self.othersOutputtingCacheTTL {
             return cachedOthersOutputting
         }
         // Module-qualified: an unqualified call would resolve to this same-named
         // protocol method (infinite recursion) — member lookup shadows the top-level
         // free function in CoreAudioHelpers.swift.
-        let result = eqYourMacbook.anyOtherProcessOutputtingAudio(excluding: processObjectID)
+        let result = eqYourMacbook.anyOtherProcessOutputtingAudio(excluding: excludedProcessObjectIDs)
         cachedOthersOutputting = result
         othersOutputtingCachedAt = now
+        othersOutputtingCacheKey = excludedProcessObjectIDs
         return result
     }
 }
